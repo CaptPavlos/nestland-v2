@@ -1,13 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react'
 import './App.css'
-import {
-  Background,
-  Controls,
-  ReactFlow,
-  ReactFlowProvider,
-  type Edge,
-  type Node,
-} from 'reactflow'
+import { Background, Controls, ReactFlow, ReactFlowProvider, type Edge, type Node } from 'reactflow'
 import 'reactflow/dist/style.css'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from './lib/supabaseClient'
@@ -79,6 +72,9 @@ const ROLE_COLORS: Record<string, { border: string; background: string; badge: s
   },
 }
 
+const ROLE_OPTIONS: string[] = ['Client', 'MD', 'OPS', 'PM', 'PM & OPS']
+const LANE_OPTIONS: string[] = ['Client', 'MD', 'OPS', 'PM', 'PM & OPS']
+
 function getRoleColors(role: string | null): { border: string; background: string } {
   const key = role?.trim() || 'Unassigned'
   const config = ROLE_COLORS[key]
@@ -120,6 +116,13 @@ function App() {
   const [newProcessName, setNewProcessName] = useState('')
   const [isCreatingProcess, setIsCreatingProcess] = useState(false)
   const [processFormError, setProcessFormError] = useState<string | null>(null)
+  const [categoryFilter, setCategoryFilter] = useState<'all' | string>('all')
+
+  const [editProcessCategory, setEditProcessCategory] = useState('')
+  const [editProcessName, setEditProcessName] = useState('')
+  const [editProcessDescription, setEditProcessDescription] = useState('')
+  const [isUpdatingProcess, setIsUpdatingProcess] = useState(false)
+  const [processUpdateError, setProcessUpdateError] = useState<string | null>(null)
 
   const [newStepTitle, setNewStepTitle] = useState('')
   const [newStepRole, setNewStepRole] = useState('')
@@ -127,11 +130,8 @@ function App() {
   const [newStepOrder, setNewStepOrder] = useState('0')
   const [isCreatingStep, setIsCreatingStep] = useState(false)
   const [stepFormError, setStepFormError] = useState<string | null>(null)
+  const [newStepDescription, setNewStepDescription] = useState('')
 
-  const [fromStepId, setFromStepId] = useState('')
-  const [toStepId, setToStepId] = useState('')
-  const [newTransitionLabel, setNewTransitionLabel] = useState('')
-  const [isCreatingTransition, setIsCreatingTransition] = useState(false)
   const [transitionFormError, setTransitionFormError] = useState<string | null>(null)
 
   const [comments, setComments] = useState<Comment[]>([])
@@ -336,6 +336,7 @@ function App() {
 
   const handleResolveComment = async (id: string) => {
     if (!supabase) return
+    if (!isAdmin) return
     setResolvingCommentId(id)
     const { data, error } = await supabase
       .from('comments')
@@ -394,6 +395,30 @@ function App() {
     setSelectedProcessSlug(slug)
     setSelectedProcessId(id)
     setRefreshCounter((value) => value + 1)
+
+    if (isAdmin) {
+      const process = processes.find((p) => p.id === id)
+      if (process) {
+        setEditProcessCategory(process.category ?? '')
+        setEditProcessName(process.name)
+        setEditProcessDescription(process.description ?? '')
+      }
+    }
+  }
+
+  const handleSelectStep = (stepId: string) => {
+    setSelectedStepId(stepId)
+
+    if (isAdmin) {
+      const step = steps.find((s) => s.id === stepId)
+      if (step) {
+        setNewStepTitle(step.title)
+        setNewStepRole(step.role ?? '')
+        setNewStepLane(step.lane ?? '')
+        setNewStepOrder(String(step.order_index))
+        setNewStepDescription(step.description ?? '')
+      }
+    }
   }
 
   const handleRefreshFlow = () => {
@@ -407,7 +432,7 @@ function App() {
     const slug = newProcessSlug.trim()
     const name = newProcessName.trim()
     if (!slug || !name) {
-      setProcessFormError('Slug and name are required.')
+      setProcessFormError('Category and name are required.')
       return
     }
 
@@ -415,7 +440,7 @@ function App() {
     setProcessFormError(null)
     const { data, error } = await supabase
       .from('processes')
-      .insert({ slug, name })
+      .insert({ slug, name, category: slug })
       .select('id, slug, name, description, owner_role, category')
       .single()
 
@@ -431,6 +456,83 @@ function App() {
       setSelectedProcessId(data.id)
     }
     setIsCreatingProcess(false)
+  }
+
+  const handleUpdateProcess = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!supabase) return
+    if (!selectedProcessId) {
+      setProcessUpdateError('Select a process first.')
+      return
+    }
+
+    const name = editProcessName.trim()
+    const description = editProcessDescription.trim() || null
+    const category = editProcessCategory.trim() || null
+    if (!name) {
+      setProcessUpdateError('Process name is required.')
+      return
+    }
+
+    setIsUpdatingProcess(true)
+    setProcessUpdateError(null)
+    const { data, error } = await supabase
+      .from('processes')
+      .update({ name, description, category })
+      .eq('id', selectedProcessId)
+      .select('id, slug, name, description, owner_role, category')
+      .single()
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to update process', error)
+      setProcessUpdateError('Failed to update process')
+    } else if (data) {
+      setProcesses((prev) => prev.map((p) => (p.id === data.id ? data : p)))
+    }
+    setIsUpdatingProcess(false)
+  }
+
+  const handleDeleteProcess = async (processId: string) => {
+    if (!supabase) return
+    if (!isAdmin) return
+
+    const process = processes.find((p) => p.id === processId)
+    if (!process) return
+
+    const processSlug = process.slug
+
+    // Best-effort cascading delete: comments (by slug), transitions & steps (by process id), then process
+    await supabase.from('comments').delete().eq('process_id', processSlug)
+    await supabase.from('process_transitions').delete().eq('process_id', processId)
+    await supabase.from('process_steps').delete().eq('process_id', processId)
+
+    const { error } = await supabase.from('processes').delete().eq('id', processId)
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to delete process', error)
+      setProcessFormError('Failed to delete process')
+      return
+    }
+
+    setProcesses((prev) => prev.filter((p) => p.id !== processId))
+
+    setSteps([])
+    setTransitions([])
+    setComments([])
+
+    if (selectedProcessId === processId) {
+      const remaining = processes.filter((p) => p.id !== processId)
+      if (remaining.length > 0) {
+        const next = remaining[0]
+        setSelectedProcessId(next.id)
+        setSelectedProcessSlug(next.slug)
+      } else {
+        setSelectedProcessId(null)
+        setSelectedProcessSlug(null)
+      }
+    }
   }
 
   const handleCreateStep = async (event: FormEvent) => {
@@ -459,6 +561,7 @@ function App() {
         role: newStepRole.trim() || null,
         lane: newStepLane.trim() || null,
         order_index: orderIndex,
+        description: newStepDescription.trim() || null,
       })
       .select('id, process_id, title, description, role, order_index, lane')
       .single()
@@ -473,46 +576,79 @@ function App() {
       setNewStepRole('')
       setNewStepLane('')
       setNewStepOrder('0')
+      setNewStepDescription('')
     }
     setIsCreatingStep(false)
   }
 
-  const handleCreateTransition = async (event: FormEvent) => {
+  const handleUpdateStep = async (event: FormEvent) => {
     event.preventDefault()
     if (!supabase) return
-    if (!selectedProcessId) {
-      setTransitionFormError('Select a process first.')
-      return
-    }
-    if (!fromStepId || !toStepId) {
-      setTransitionFormError('Select both source and target steps.')
+    if (!selectedProcessId || !selectedStepId) {
+      setStepFormError('Select a step first.')
       return
     }
 
-    setIsCreatingTransition(true)
-    setTransitionFormError(null)
+    const title = newStepTitle.trim()
+    if (!title) {
+      setStepFormError('Step title is required.')
+      return
+    }
+
+    const orderIndex = Number(newStepOrder) || 0
+
+    setIsCreatingStep(true)
+    setStepFormError(null)
+    const { data, error } = await supabase
+      .from('process_steps')
+      .update({
+        title,
+        role: newStepRole.trim() || null,
+        lane: newStepLane.trim() || null,
+        order_index: orderIndex,
+        description: newStepDescription.trim() || null,
+      })
+      .eq('id', selectedStepId)
+      .select('id, process_id, title, description, role, order_index, lane')
+      .single()
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to update step', error)
+      setStepFormError('Failed to update step')
+    } else if (data) {
+      setSteps((prev) => prev.map((step) => (step.id === data.id ? data : step)))
+    }
+    setIsCreatingStep(false)
+  }
+
+  const handleConnect = async (connection: { source?: string | null; target?: string | null }) => {
+    if (!supabase) return
+    if (!isAdmin) return
+    if (!selectedProcessId) return
+
+    const { source, target } = connection
+    if (!source || !target) return
+
     const { data, error } = await supabase
       .from('process_transitions')
       .insert({
         process_id: selectedProcessId,
-        from_step_id: fromStepId,
-        to_step_id: toStepId,
-        label: newTransitionLabel.trim() || null,
+        from_step_id: source,
+        to_step_id: target,
+        label: null,
       })
       .select('id, process_id, from_step_id, to_step_id, label')
       .single()
 
     if (error) {
       // eslint-disable-next-line no-console
-      console.error('Failed to create transition', error)
+      console.error('Failed to create transition from connect', error)
       setTransitionFormError('Failed to create transition')
     } else if (data) {
       setTransitions((prev) => [...prev, data])
-      setFromStepId('')
-      setToStepId('')
-      setNewTransitionLabel('')
+      setTransitionFormError(null)
     }
-    setIsCreatingTransition(false)
   }
 
   const { nodes, edges } = useMemo(() => {
@@ -572,7 +708,7 @@ function App() {
       return {
         id: step.id,
         position,
-        data: { label: step.title },
+        data: { label: `${step.order_index}. ${step.title}` },
         style,
       }
     })
@@ -595,6 +731,30 @@ function App() {
   const selectedProcess = useMemo(
     () => processes.find((process) => process.id === selectedProcessId) ?? null,
     [processes, selectedProcessId],
+  )
+
+  const availableCategories = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          processes
+            .map((process) => process.category || '')
+            .filter((category) => category.trim().length > 0),
+        ),
+      ).sort((a, b) => a.localeCompare(b)),
+    [processes],
+  )
+
+  const availableLanes = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          steps
+            .map((step) => step.lane || '')
+            .filter((lane) => lane.trim().length > 0),
+        ),
+      ).sort((a, b) => a.localeCompare(b)),
+    [steps],
   )
 
   const visibleComments = useMemo(() => {
@@ -750,37 +910,68 @@ function App() {
                       : 'Ask an admin to create the first process.'}
                   </p>
                 ) : (
-                  processes.map((process) => {
-                    const isActive = process.slug === selectedProcessSlug
-                    return (
-                      <button
-                        key={process.id}
-                        type="button"
-                        onClick={() => handleSelectProcess(process.slug, process.id)}
-                        className={`flex w-full flex-col items-start gap-0.5 rounded-xl border px-3 py-2 text-left text-[11px] ${
-                          isActive
-                            ? 'border-nest-gold/40 bg-gradient-to-r from-nest-green-dark/70 via-black/80 to-nest-brown/40 text-slate-100 shadow-soft-elevated'
-                            : 'border-white/5 bg-white/5 text-slate-200 hover:border-nest-gold/30 hover:bg-white/10'
-                        }`}
-                      >
-                        <span className="font-semibold">{process.name}</span>
-                        {process.category && (
-                          <span className="text-[10px] text-slate-500">{process.category}</span>
-                        )}
-                      </button>
+                  processes
+                    .filter((process) =>
+                      categoryFilter === 'all'
+                        ? true
+                        : (process.category || '').trim() === categoryFilter,
                     )
-                  })
+                    .map((process) => {
+                      const isActive = process.slug === selectedProcessSlug
+                      return (
+                        <button
+                          key={process.id}
+                          type="button"
+                          onClick={() => handleSelectProcess(process.slug, process.id)}
+                          className={`flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left text-[11px] ${
+                            isActive
+                              ? 'border-nest-gold/40 bg-gradient-to-r from-nest-green-dark/70 via-black/80 to-nest-brown/40 text-slate-100 shadow-soft-elevated'
+                              : 'border-white/5 bg-white/5 text-slate-200 hover:border-nest-gold/30 hover:bg-white/10'
+                          }`}
+                        >
+                          <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
+                            <span className="truncate font-semibold">{process.name}</span>
+                            {process.category && (
+                              <span className="truncate text-[10px] text-slate-500">
+                                Category: {process.category}
+                              </span>
+                            )}
+                          </span>
+                        </button>
+                      )
+                    })
                 )}
               </div>
               {isAdmin && (
                 <div className="mt-3 border-t border-white/5 pt-3 text-[11px]">
                   <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                    Admin · New Process
+                    Admin · Processes
                   </p>
+                  {availableCategories.length > 0 && (
+                    <div className="mb-2 flex items-center gap-2 text-[10px] text-slate-400">
+                      <span className="uppercase tracking-[0.18em] text-slate-500">Filter</span>
+                      <select
+                        className="flex-1 rounded-full border border-white/10 bg-black/40 px-2 py-1 text-[10px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                        value={categoryFilter}
+                        onChange={(event) =>
+                          setCategoryFilter(
+                            (event.target.value || 'all') as 'all' | string,
+                          )
+                        }
+                      >
+                        <option value="all">All categories</option>
+                        {availableCategories.map((category) => (
+                          <option key={category} value={category}>
+                            {category}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <form className="space-y-2" onSubmit={handleCreateProcess}>
                     <input
                       className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                      placeholder="Slug (e.g. renovation)"
+                      placeholder="Category (e.g. Renovation)"
                       value={newProcessSlug}
                       onChange={(event) => setNewProcessSlug(event.target.value)}
                     />
@@ -804,6 +995,50 @@ function App() {
                       <p className="mt-1 text-[10px] text-slate-500">{authMessage}</p>
                     )}
                   </form>
+                  {selectedProcess && (
+                    <div className="mt-3 border-t border-white/5 pt-3 text-[11px]">
+                      <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                        Admin · Edit selected process
+                      </p>
+                      <form className="space-y-2" onSubmit={handleUpdateProcess}>
+                        <input
+                          className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                          placeholder="Category (e.g. Renovation)"
+                          value={editProcessCategory}
+                          onChange={(event) => setEditProcessCategory(event.target.value)}
+                        />
+                        <input
+                          className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                          placeholder="Process name"
+                          value={editProcessName}
+                          onChange={(event) => setEditProcessName(event.target.value)}
+                        />
+                        <textarea
+                          className="h-16 w-full resize-none rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                          placeholder="Process description"
+                          value={editProcessDescription}
+                          onChange={(event) => setEditProcessDescription(event.target.value)}
+                        />
+                        {processUpdateError && (
+                          <p className="text-[10px] text-red-400">{processUpdateError}</p>
+                        )}
+                        <button
+                          type="submit"
+                          disabled={isUpdatingProcess}
+                          className="w-full rounded-full border border-nest-gold/40 bg-black/40 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-nest-gold shadow-soft-elevated hover:bg-nest-gold/10 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {isUpdatingProcess ? 'Updating...' : 'Update process'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteProcess(selectedProcess.id)}
+                          className="mt-1 w-full rounded-full border border-red-500/40 bg-red-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-red-200 shadow-soft-elevated hover:border-red-400 hover:bg-red-500/20"
+                        >
+                          Delete process
+                        </button>
+                      </form>
+                    </div>
+                  )}
                 </div>
               )}
             </>
@@ -866,7 +1101,8 @@ function App() {
                   panOnDrag
                   selectionOnDrag={false}
                   nodesDraggable={false}
-                  onNodeClick={(_, node) => setSelectedStepId(node.id)}
+                  onConnect={handleConnect}
+                  onNodeClick={(_, node) => handleSelectStep(node.id)}
                   onPaneClick={() => setSelectedStepId(null)}
                 >
                   <Background color="#111827" gap={24} />
@@ -944,18 +1180,30 @@ function App() {
                     onChange={(event) => setNewStepTitle(event.target.value)}
                   />
                   <div className="flex gap-2">
-                    <input
-                      className="w-1/2 rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                      placeholder="Role (MD / OPS / PM)"
+                    <select
+                      className="w-1/2 rounded-xl border border-white/10 bg-black/40 px-2.5 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
                       value={newStepRole}
                       onChange={(event) => setNewStepRole(event.target.value)}
-                    />
-                    <input
-                      className="w-1/2 rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                      placeholder="Lane (MD / OPS / PM)"
+                    >
+                      <option value="">Role</option>
+                      {ROLE_OPTIONS.map((role) => (
+                        <option key={role} value={role}>
+                          {role}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      className="w-1/2 rounded-xl border border-white/10 bg-black/40 px-2.5 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
                       value={newStepLane}
                       onChange={(event) => setNewStepLane(event.target.value)}
-                    />
+                    >
+                      <option value="">Lane</option>
+                      {LANE_OPTIONS.map((lane) => (
+                        <option key={lane} value={lane}>
+                          {lane}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                   <div className="flex items-center gap-2">
                     <input
@@ -966,62 +1214,91 @@ function App() {
                     />
                     <span className="text-[10px] text-slate-500">Horizontal position</span>
                   </div>
+                  <textarea
+                    className="h-16 w-full resize-none rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                    placeholder="Step details / notes"
+                    value={newStepDescription}
+                    onChange={(event) => setNewStepDescription(event.target.value)}
+                  />
                   {stepFormError && (
                     <p className="text-[10px] text-red-400">{stepFormError}</p>
                   )}
-                  <button
-                    type="submit"
-                    disabled={isCreatingStep}
-                    className="w-full rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {isCreatingStep ? 'Adding...' : 'Add step'}
-                  </button>
-                </form>
-                <form className="space-y-2" onSubmit={handleCreateTransition}>
-                  <p className="text-[10px] font-semibold text-slate-300">Add transition</p>
                   <div className="flex gap-2">
-                    <select
-                      className="w-1/2 rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                      value={fromStepId}
-                      onChange={(event) => setFromStepId(event.target.value)}
+                    <button
+                      type="submit"
+                      disabled={isCreatingStep}
+                      className="flex-1 rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      <option value="">From step</option>
-                      {steps.map((step) => (
-                        <option key={step.id} value={step.id}>
-                          {step.title}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      className="w-1/2 rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                      value={toStepId}
-                      onChange={(event) => setToStepId(event.target.value)}
+                      {isCreatingStep ? 'Adding...' : 'Add step'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isCreatingStep || !selectedStep}
+                      onClick={handleUpdateStep}
+                      className="flex-1 rounded-full border border-nest-gold/40 bg-black/40 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-nest-gold shadow-soft-elevated hover:bg-nest-gold/10 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      <option value="">To step</option>
-                      {steps.map((step) => (
-                        <option key={step.id} value={step.id}>
-                          {step.title}
-                        </option>
-                      ))}
-                    </select>
+                      {isCreatingStep ? 'Updating...' : 'Update selected step'}
+                    </button>
                   </div>
-                  <input
-                    className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                    placeholder="Label (e.g. Qualified)"
-                    value={newTransitionLabel}
-                    onChange={(event) => setNewTransitionLabel(event.target.value)}
-                  />
+                </form>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-semibold text-slate-300">Danger zone</p>
+                    {availableLanes.length > 0 && (
+                      <p className="text-[10px] text-slate-500">
+                        Lanes: {availableLanes.join(', ')}
+                      </p>
+                    )}
+                  </div>
                   {transitionFormError && (
                     <p className="text-[10px] text-red-400">{transitionFormError}</p>
                   )}
                   <button
-                    type="submit"
-                    disabled={isCreatingTransition}
-                    className="w-full rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                    type="button"
+                    disabled={!selectedStep}
+                    onClick={async () => {
+                      if (!supabase || !selectedStepId) return
+                      if (!selectedProcessId) return
+
+                      // Delete comments for this step
+                      await supabase.from('comments').delete().eq('step_id', selectedStepId)
+                      // Delete transitions touching this step
+                      await supabase
+                        .from('process_transitions')
+                        .delete()
+                        .eq('process_id', selectedProcessId)
+                        .or(`from_step_id.eq.${selectedStepId},to_step_id.eq.${selectedStepId}`)
+
+                      const { error } = await supabase
+                        .from('process_steps')
+                        .delete()
+                        .eq('id', selectedStepId)
+
+                      if (error) {
+                        // eslint-disable-next-line no-console
+                        console.error('Failed to delete step', error)
+                        setStepFormError('Failed to delete step')
+                        return
+                      }
+
+                      setSteps((prev) => prev.filter((step) => step.id !== selectedStepId))
+                      setTransitions((prev) =>
+                        prev.filter(
+                          (transition) =>
+                            transition.from_step_id !== selectedStepId &&
+                            transition.to_step_id !== selectedStepId,
+                        ),
+                      )
+                      setComments((prev) =>
+                        prev.filter((comment) => comment.step_id !== selectedStepId),
+                      )
+                      setSelectedStepId(null)
+                    }}
+                    className="w-full rounded-full border border-red-500/40 bg-red-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-red-200 shadow-soft-elevated hover:border-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {isCreatingTransition ? 'Adding...' : 'Add transition'}
+                    Delete selected step
                   </button>
-                </form>
+                </div>
               </div>
             </div>
           )}
@@ -1100,7 +1377,7 @@ function App() {
                       {comment.status === 'open' ? 'open' : 'resolved'} ·{' '}
                       {new Date(comment.created_at).toLocaleString()}
                     </span>
-                    {comment.status === 'open' && (
+                    {isAdmin && comment.status === 'open' && (
                       <button
                         type="button"
                         onClick={() => handleResolveComment(comment.id)}
@@ -1211,7 +1488,8 @@ function App() {
                 panOnDrag
                 selectionOnDrag={false}
                 nodesDraggable={false}
-                onNodeClick={(_, node) => setSelectedStepId(node.id)}
+                onConnect={handleConnect}
+                onNodeClick={(_, node) => handleSelectStep(node.id)}
                 onPaneClick={() => setSelectedStepId(null)}
               >
                 <Background color="#111827" gap={24} />
