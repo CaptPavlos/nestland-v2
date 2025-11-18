@@ -96,71 +96,6 @@ function getRoleBadgeClasses(role: string | null): string {
   return 'border-slate-500/40 bg-slate-500/10 text-slate-200'
 }
 
-const initialNodes: Node[] = [
-  {
-    id: 'start',
-    position: { x: 0, y: 0 },
-    data: { label: 'Lead Captured' },
-    style: {
-      borderRadius: 999,
-      paddingInline: 16,
-      paddingBlock: 8,
-      border: '1px solid rgba(212, 175, 55, 0.8)',
-      background: 'rgba(11, 59, 46, 0.85)',
-      color: '#f9fafb',
-      fontSize: 12,
-    },
-  },
-  {
-    id: 'qualify',
-    position: { x: 220, y: 0 },
-    data: { label: 'MD / OPS Qualify Lead' },
-    style: {
-      borderRadius: 16,
-      paddingInline: 16,
-      paddingBlock: 10,
-      border: '1px solid rgba(75, 59, 42, 0.9)',
-      background: 'rgba(15, 23, 42, 0.95)',
-      color: '#e5e7eb',
-      fontSize: 12,
-    },
-  },
-  {
-    id: 'visit',
-    position: { x: 460, y: 0 },
-    data: { label: 'Property Visit & Assessment' },
-    style: {
-      borderRadius: 16,
-      paddingInline: 18,
-      paddingBlock: 10,
-      border: '1px solid rgba(212, 175, 55, 0.5)',
-      background: 'rgba(8, 47, 35, 0.9)',
-      color: '#f9fafb',
-      fontSize: 12,
-    },
-  },
-  {
-    id: 'offer',
-    position: { x: 700, y: 0 },
-    data: { label: 'Offer & Contract (PM)' },
-    style: {
-      borderRadius: 16,
-      paddingInline: 18,
-      paddingBlock: 10,
-      border: '1px solid rgba(212, 175, 55, 0.8)',
-      background: 'rgba(15, 23, 42, 0.95)',
-      color: '#f9fafb',
-      fontSize: 12,
-    },
-  },
-]
-
-const initialEdges: Edge[] = [
-  { id: 'e1', source: 'start', target: 'qualify', label: 'MD / OPS', type: 'smoothstep' },
-  { id: 'e2', source: 'qualify', target: 'visit', label: 'Qualified', type: 'smoothstep' },
-  { id: 'e3', source: 'visit', target: 'offer', label: 'Go / No-Go', type: 'smoothstep' },
-]
-
 function App() {
   const [user, setUser] = useState<User | null>(null)
   const [authMessage, setAuthMessage] = useState<string | null>(null)
@@ -210,28 +145,31 @@ function App() {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
   const [viewMode, setViewMode] = useState<'workflow' | 'responsibilities'>('workflow')
+  const [exportedAt, setExportedAt] = useState<string | null>(null)
 
   const isAdmin = user?.email === ADMIN_EMAIL
 
   useEffect(() => {
-    if (!supabase) return
+    const client = supabase
+    if (!client) return
 
     void (async () => {
       const {
         data: { user: currentUser },
-      } = await supabase.auth.getUser()
+      } = await client.auth.getUser()
       setUser(currentUser)
     })()
   }, [])
 
   useEffect(() => {
-    if (!supabase) return
+    const client = supabase
+    if (!client) return
 
     let isCancelled = false
 
     const loadProcesses = async () => {
       setIsLoadingProcesses(true)
-      const { data, error } = await supabase
+      const { data, error } = await client
         .from('processes')
         .select('id, slug, name, description, owner_role, category')
         .order('name', { ascending: true })
@@ -269,7 +207,8 @@ function App() {
   }, [selectedProcessSlug])
 
   useEffect(() => {
-    if (!supabase) return
+    const client = supabase
+    if (!client) return
 
     let isCancelled = false
 
@@ -282,12 +221,12 @@ function App() {
 
       setIsLoadingFlow(true)
       const [stepsResult, transitionsResult] = await Promise.all([
-        supabase
+        client
           .from('process_steps')
           .select('id, process_id, title, description, role, order_index, lane')
           .eq('process_id', selectedProcessId)
           .order('order_index', { ascending: true }),
-        supabase
+        client
           .from('process_transitions')
           .select('id, process_id, from_step_id, to_step_id, label')
           .eq('process_id', selectedProcessId),
@@ -321,13 +260,14 @@ function App() {
   }, [selectedProcessId, refreshCounter])
 
   useEffect(() => {
-    if (!supabase) return
+    const client = supabase
+    if (!client) return
 
     let isCancelled = false
 
     const loadComments = async () => {
       setIsLoadingComments(true)
-      const { data, error } = await supabase
+      const { data, error } = await client
         .from('comments')
         .select('id, created_at, process_id, step_id, body, status')
         .eq('process_id', selectedProcessSlug ?? DEFAULT_PROCESS_SLUG)
@@ -620,8 +560,8 @@ function App() {
       const style: CSSProperties = {
         ...baseStyle,
         ...(isSelected && {
-          border: '2px solid #22c55e',
-          boxShadow: '0 0 0 1px rgba(34,197,94,0.45)',
+          border: '2px solid #f97316',
+          boxShadow: '0 0 0 1px rgba(249,115,22,0.45)',
         }),
         ...(hasOpenComments && {
           border: '2px solid #ef4444',
@@ -645,7 +585,7 @@ function App() {
     }))
 
     return { nodes: dynamicNodes, edges: dynamicEdges }
-  }, [steps, transitions])
+  }, [steps, transitions, comments, selectedStepId])
 
   const selectedStep = useMemo(
     () => steps.find((step) => step.id === selectedStepId) ?? null,
@@ -678,6 +618,7 @@ function App() {
 
   const handleExportPdf = () => {
     if (typeof window === 'undefined') return
+    setExportedAt(new Date().toLocaleString())
     window.print()
   }
 
@@ -694,7 +635,7 @@ function App() {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-sm font-semibold tracking-wide text-slate-50">
-                  Nest Land Process Command Center
+                  Nestland Command Center
                 </h1>
                 <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-300">
                   Internal
@@ -1197,6 +1138,48 @@ function App() {
           </form>
         </aside>
       </main>
+      {/* Print-only workflow export (A4-friendly) */}
+      <div id="print-workflow">
+        <div className="print-container">
+          <header className="print-header">
+            <h1 className="print-title">{selectedProcess?.name ?? 'Workflow'}</h1>
+            {selectedProcess?.description && (
+              <p className="print-subtitle">{selectedProcess.description}</p>
+            )}
+            <p className="print-meta">
+              Exported on: {exportedAt ?? new Date().toLocaleString()}
+            </p>
+          </header>
+          <section className="print-section">
+            <h2 className="print-section-title">Step-by-step sequence</h2>
+            <table className="print-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Step</th>
+                  <th>Responsibility</th>
+                  <th>Lane</th>
+                  <th>Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {steps
+                  .slice()
+                  .sort((a, b) => a.order_index - b.order_index)
+                  .map((step) => (
+                    <tr key={step.id}>
+                      <td>{step.order_index}</td>
+                      <td>{step.title}</td>
+                      <td>{step.role ?? 'Unassigned'}</td>
+                      <td>{step.lane ?? '—'}</td>
+                      <td>{step.description ?? ''}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </section>
+        </div>
+      </div>
       {isFullscreen && (
         <div className="fixed inset-0 z-40 flex flex-col bg-black/95">
           <header className="flex items-center justify-between border-b border-white/10 bg-black/70 px-4 py-2 text-[11px] text-slate-300">
@@ -1214,7 +1197,7 @@ function App() {
               Close
             </button>
           </header>
-          <div className="flex-1 bg-gradient-to-br from-black via-slate-900 to-black">
+          <div className="relative flex-1 bg-gradient-to-br from-black via-slate-900 to-black">
             <ReactFlowProvider>
               <ReactFlow
                 nodes={nodes}
@@ -1235,6 +1218,43 @@ function App() {
                 <Controls position="bottom-right" />
               </ReactFlow>
             </ReactFlowProvider>
+            {selectedStep && (
+              <div className="pointer-events-auto absolute top-4 right-4 z-50 w-80 max-w-[90vw] rounded-2xl border border-white/10 bg-black/80 p-3 text-[11px] text-slate-100 shadow-soft-elevated backdrop-blur">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    Step details
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedStepId(null)}
+                    className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+                  >
+                    Close
+                  </button>
+                </div>
+                <p className="text-[11px] font-semibold text-slate-50">{selectedStep.title}</p>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-slate-400">
+                  <span>Responsibility:</span>
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] ${getRoleBadgeClasses(selectedStep.role)}`}
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-current/70" />
+                    {selectedStep.role ?? 'Unassigned'}
+                  </span>
+                  {selectedStep.lane && (
+                    <span className="text-slate-500">Lane: {selectedStep.lane}</span>
+                  )}
+                </div>
+                <p className="mt-1 text-[10px] text-slate-400">
+                  Order index: <span className="text-slate-200">{selectedStep.order_index}</span>
+                </p>
+                {selectedStep.description && (
+                  <p className="mt-1 text-[11px] text-slate-200 whitespace-pre-wrap">
+                    {selectedStep.description}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
