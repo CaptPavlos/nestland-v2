@@ -1,6 +1,14 @@
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react'
 import './App.css'
-import { Background, Controls, ReactFlow, ReactFlowProvider, type Edge, type Node } from 'reactflow'
+import {
+  Background,
+  Controls,
+  ReactFlow,
+  ReactFlowProvider,
+  type Edge,
+  type Node,
+  type ReactFlowInstance,
+} from 'reactflow'
 import 'reactflow/dist/style.css'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from './lib/supabaseClient'
@@ -10,6 +18,7 @@ type Comment = {
   created_at: string
   process_id: string
   step_id: string | null
+  project_id?: string | null
   body: string
   status: 'open' | 'resolved'
 }
@@ -39,6 +48,31 @@ type ProcessTransition = {
   from_step_id: string
   to_step_id: string
   label: string | null
+}
+
+type Project = {
+  id: string
+  name: string
+  process_id: string
+  current_step_id: string | null
+  status: string
+  created_at: string
+}
+
+type ProjectStepSummary = {
+  id: string
+  process_id: string
+  title: string
+  order_index: number
+  description: string | null
+}
+
+type ProjectStepComment = {
+  id: string
+  project_id: string
+  step_id: string
+  body: string
+  created_at: string
 }
 
 const ADMIN_EMAIL = 'captain-pavlos@outlook.com'
@@ -73,7 +107,6 @@ const ROLE_COLORS: Record<string, { border: string; background: string; badge: s
 }
 
 const ROLE_OPTIONS: string[] = ['Client', 'MD', 'OPS', 'PM', 'PM & OPS']
-const LANE_OPTIONS: string[] = ['Client', 'MD', 'OPS', 'PM', 'PM & OPS']
 
 function getRoleColors(role: string | null): { border: string; background: string } {
   const key = role?.trim() || 'Unassigned'
@@ -140,12 +173,75 @@ function App() {
   const [isLoadingComments, setIsLoadingComments] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
   const [resolvingCommentId, setResolvingCommentId] = useState<string | null>(null)
+  const [projectComments, setProjectComments] = useState<ProjectStepComment[]>([])
+  const [newProjectComments, setNewProjectComments] = useState<Record<string, string>>({})
+  const [isSubmittingProjectCommentKey, setIsSubmittingProjectCommentKey] = useState<string | null>(null)
+  const [projectCommentsError, setProjectCommentsError] = useState<string | null>(null)
+
+  const [activePage, setActivePage] = useState<'workflow' | 'projects' | 'wiki' | 'settings'>(
+    'workflow',
+  )
+
+  const [wikiTitle, setWikiTitle] = useState('Company Regulations')
+  const [wikiContent, setWikiContent] = useState('')
+  const [wikiCategories, setWikiCategories] = useState('')
+  const [isLoadingWiki, setIsLoadingWiki] = useState(false)
+  const [wikiError, setWikiError] = useState<string | null>(null)
+  const [isEditingWiki, setIsEditingWiki] = useState(false)
+  const [wikiDraftTitle, setWikiDraftTitle] = useState('Company Regulations')
+  const [wikiDraftContent, setWikiDraftContent] = useState('')
+  const [wikiDraftCategories, setWikiDraftCategories] = useState('')
+  const [isSavingWiki, setIsSavingWiki] = useState(false)
+
+  const [projects, setProjects] = useState<Project[]>([])
+  const [isLoadingProjects, setIsLoadingProjects] = useState(false)
+  const [projectsError, setProjectsError] = useState<string | null>(null)
+  const [newProjectName, setNewProjectName] = useState('')
+  const [newProjectProcessId, setNewProjectProcessId] = useState('')
+  const [isCreatingProject, setIsCreatingProject] = useState(false)
+  const [projectFormError, setProjectFormError] = useState<string | null>(null)
+
+  const [projectSteps, setProjectSteps] = useState<ProjectStepSummary[]>([])
+
+  const [profileFirstName, setProfileFirstName] = useState('')
+  const [profileLastName, setProfileLastName] = useState('')
+  const [profileRole, setProfileRole] = useState('')
+  const [isLoadingProfile, setIsLoadingProfile] = useState(false)
+  const [isSavingProfile, setIsSavingProfile] = useState(false)
+  const [profileError, setProfileError] = useState<string | null>(null)
+  const [profileSuccess, setProfileSuccess] = useState<string | null>(null)
 
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
   const [viewMode, setViewMode] = useState<'workflow' | 'responsibilities'>('workflow')
   const [exportedAt, setExportedAt] = useState<string | null>(null)
+
+  const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null)
+  const hasInitialFitRef = useRef(false)
+
+  const [wikiUrl, setWikiUrl] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    const storedWikiUrl = window.localStorage.getItem('nestland_wiki_url')
+    return storedWikiUrl ?? ''
+  })
+  const [customRoles, setCustomRoles] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return []
+    const storedRoles = window.localStorage.getItem('nestland_custom_roles')
+    if (!storedRoles) return []
+    try {
+      const parsed = JSON.parse(storedRoles)
+      if (Array.isArray(parsed)) {
+        return parsed.filter((role) => typeof role === 'string')
+      }
+      return []
+    } catch {
+      return []
+    }
+  })
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [newRoleName, setNewRoleName] = useState('')
+  const [rolesError, setRolesError] = useState<string | null>(null)
 
   const isAdmin = user?.email === ADMIN_EMAIL
 
@@ -160,6 +256,16 @@ function App() {
       setUser(currentUser)
     })()
   }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('nestland_wiki_url', wikiUrl)
+  }, [wikiUrl])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('nestland_custom_roles', JSON.stringify(customRoles))
+  }, [customRoles])
 
   useEffect(() => {
     const client = supabase
@@ -205,6 +311,145 @@ function App() {
       isCancelled = true
     }
   }, [selectedProcessSlug])
+
+  useEffect(() => {
+    if (activePage !== 'wiki') return
+
+    const client = supabase
+    if (!client) return
+
+    let isCancelled = false
+
+    const loadWiki = async () => {
+      setIsLoadingWiki(true)
+      const { data, error } = await client
+        .from('company_wiki')
+        .select('title, content, categories')
+        .eq('slug', 'company_regulations')
+        .single()
+
+      if (!isCancelled) {
+        if (error) {
+          // eslint-disable-next-line no-console
+          console.error('Failed to load wiki', error)
+          setWikiError('Failed to load wiki')
+        } else if (data) {
+          setWikiTitle(data.title)
+          setWikiContent(data.content)
+          setWikiCategories((data as { categories?: string | null }).categories ?? '')
+          setWikiError(null)
+        }
+        setIsLoadingWiki(false)
+      }
+    }
+
+    void loadWiki()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [activePage])
+
+  useEffect(() => {
+    if (activePage !== 'projects') return
+
+    const client = supabase
+    if (!client) return
+
+    let isCancelled = false
+
+    const loadProjects = async () => {
+      setIsLoadingProjects(true)
+      setProjectsError(null)
+
+      const { data, error } = await client
+        .from('projects')
+        .select('id, name, process_id, current_step_id, status, created_at')
+        .order('created_at', { ascending: false })
+
+      if (isCancelled) {
+        return
+      }
+
+      if (error) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to load projects', error)
+        setProjects([])
+        setProjectSteps([])
+        setProjectsError('Failed to load projects')
+        setIsLoadingProjects(false)
+        return
+      }
+
+      const rows = data ?? []
+      setProjects(rows)
+      setProjectsError(null)
+
+      if (rows.length === 0) {
+        setProjectSteps([])
+        setProjectComments([])
+        setIsLoadingProjects(false)
+        return
+      }
+
+      const processIds = Array.from(new Set(rows.map((project) => project.process_id)))
+
+      const { data: stepsData, error: stepsError } = await client
+        .from('process_steps')
+        .select('id, process_id, title, order_index, description')
+        .in('process_id', processIds)
+        .order('order_index', { ascending: true })
+
+      if (isCancelled) {
+        return
+      }
+
+      if (stepsError) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to load project steps', stepsError)
+        setProjectSteps([])
+      } else {
+        const summaries: ProjectStepSummary[] = (stepsData ?? []).map((step) => ({
+          id: step.id,
+          process_id: step.process_id,
+          title: step.title,
+          order_index: step.order_index,
+          description: (step as { description?: string | null }).description ?? null,
+        }))
+        setProjectSteps(summaries)
+      }
+
+      const projectIds = rows.map((project) => project.id)
+
+      const { data: commentsData, error: commentsError } = await client
+        .from('project_step_comments')
+        .select('id, project_id, step_id, body, created_at')
+        .in('project_id', projectIds)
+        .order('created_at', { ascending: false })
+
+      if (isCancelled) {
+        return
+      }
+
+      if (commentsError) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to load project step comments', commentsError)
+        setProjectComments([])
+        setProjectCommentsError('Failed to load project step comments')
+      } else {
+        setProjectComments(commentsData ?? [])
+        setProjectCommentsError(null)
+      }
+
+      setIsLoadingProjects(false)
+    }
+
+    void loadProjects()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [activePage])
 
   useEffect(() => {
     const client = supabase
@@ -258,6 +503,68 @@ function App() {
       isCancelled = true
     }
   }, [selectedProcessId, refreshCounter])
+
+  useEffect(() => {
+    if (activePage !== 'settings') return
+
+    const client = supabase
+    if (!client) return
+
+    if (!user) return
+
+    let isCancelled = false
+
+    const loadProfile = async () => {
+      setIsLoadingProfile(true)
+      setProfileError(null)
+      setProfileSuccess(null)
+
+      const { data, error } = await client
+        .from('profiles')
+        .select('first_name, last_name, role')
+        .eq('id', user.id)
+        .maybeSingle()
+
+      if (isCancelled) return
+
+      if (error) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to load profile', error)
+        setProfileError('Failed to load profile')
+      } else if (data) {
+        setProfileFirstName((data as { first_name?: string | null }).first_name ?? '')
+        setProfileLastName((data as { last_name?: string | null }).last_name ?? '')
+        setProfileRole((data as { role?: string | null }).role ?? '')
+        setProfileError(null)
+      } else {
+        setProfileFirstName('')
+        setProfileLastName('')
+        setProfileRole('')
+      }
+
+      setIsLoadingProfile(false)
+    }
+
+    void loadProfile()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [activePage, user])
+
+  useEffect(() => {
+    if (!reactFlowInstance) return
+    if (!selectedProcessId) return
+    if (steps.length === 0) return
+    if (hasInitialFitRef.current) return
+
+    reactFlowInstance.fitView({ padding: 0.2 })
+    const currentZoom = reactFlowInstance.getZoom()
+    const targetZoom = Math.min(currentZoom * 1.2, 2)
+    reactFlowInstance.zoomTo(targetZoom)
+
+    hasInitialFitRef.current = true
+  }, [reactFlowInstance, selectedProcessId, steps])
 
   useEffect(() => {
     const client = supabase
@@ -332,6 +639,219 @@ function App() {
     }
 
     setIsSubmittingComment(false)
+  }
+
+  const handleSaveProfile = async (event: FormEvent) => {
+    event.preventDefault()
+
+    if (!supabase) return
+    if (!user) {
+      setProfileError('You must be signed in to update your profile.')
+      return
+    }
+
+    const firstName = profileFirstName.trim()
+    const lastName = profileLastName.trim()
+    const role = profileRole.trim()
+
+    setIsSavingProfile(true)
+    setProfileError(null)
+    setProfileSuccess(null)
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .upsert(
+        {
+          id: user.id,
+          first_name: firstName || null,
+          last_name: lastName || null,
+          role: role || null,
+        },
+        { onConflict: 'id' },
+      )
+      .select('first_name, last_name, role')
+      .single()
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to save profile', error)
+      setProfileError('Failed to save profile')
+    } else if (data) {
+      setProfileFirstName((data as { first_name?: string | null }).first_name ?? '')
+      setProfileLastName((data as { last_name?: string | null }).last_name ?? '')
+      setProfileRole((data as { role?: string | null }).role ?? '')
+      setProfileSuccess('Profile updated')
+    }
+
+    setIsSavingProfile(false)
+  }
+
+  const handleSaveWiki = async (event: FormEvent) => {
+    event.preventDefault()
+
+    if (!supabase) return
+    if (!isAdmin) return
+
+    const title = wikiDraftTitle.trim() || 'Company Regulations'
+    const content = wikiDraftContent.trim()
+
+    if (!content) {
+      setWikiError('Wiki content cannot be empty.')
+      return
+    }
+
+    setIsSavingWiki(true)
+    setWikiError(null)
+
+    const { data, error } = await supabase
+      .from('company_wiki')
+      .upsert({
+        slug: 'company_regulations',
+        title,
+        content,
+      })
+      .select('title, content')
+      .single()
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to save wiki', error)
+      setWikiError('Failed to save wiki')
+    } else if (data) {
+      setWikiTitle(data.title)
+      setWikiContent(data.content)
+      setIsEditingWiki(false)
+    }
+
+    setIsSavingWiki(false)
+  }
+
+  const handleCreateProject = async (event: FormEvent) => {
+    event.preventDefault()
+
+    if (!supabase) return
+
+    if (!user) {
+      setProjectFormError('You must be signed in to create a project.')
+      return
+    }
+
+    const name = newProjectName.trim()
+    const processId = newProjectProcessId
+
+    if (!name || !processId) {
+      setProjectFormError('Project name and process are required.')
+      return
+    }
+
+    setIsCreatingProject(true)
+    setProjectFormError(null)
+
+    const { data, error } = await supabase
+      .from('projects')
+      .insert({ name, process_id: processId })
+      .select('id, name, process_id, current_step_id, status, created_at')
+      .single()
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to create project', error)
+      setProjectFormError('Failed to create project')
+    } else if (data) {
+      setProjects((prev) => [data, ...prev])
+      setNewProjectName('')
+      setNewProjectProcessId('')
+    }
+
+    setIsCreatingProject(false)
+  }
+
+  const handleChangeProjectStep = async (projectId: string, stepId: string | null) => {
+    if (!supabase) return
+
+    if (!user) {
+      setProjectsError('You must be signed in to update project progress.')
+      return
+    }
+
+    const { data, error } = await supabase
+      .from('projects')
+      .update({ current_step_id: stepId })
+      .eq('id', projectId)
+      .select('id, name, process_id, current_step_id, status, created_at')
+      .single()
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to update project step', error)
+      setProjectsError('Failed to update project step')
+      return
+    }
+
+    setProjects((prev) => prev.map((project) => (project.id === projectId ? data : project)))
+    setProjectsError(null)
+  }
+
+  const handleSubmitProjectStepComment = async (
+    event: FormEvent,
+    projectId: string,
+    stepId: string | null,
+  ) => {
+    event.preventDefault()
+
+    if (!supabase) return
+
+    if (!user) {
+      setProjectCommentsError('You must be signed in to post project step comments.')
+      return
+    }
+
+    if (!stepId) return
+
+    const key = `${projectId}:${stepId}`
+    const body = (newProjectComments[key] ?? '').trim()
+    if (!body) return
+
+    setIsSubmittingProjectCommentKey(key)
+    setProjectCommentsError(null)
+
+    const { data, error } = await supabase
+      .from('project_step_comments')
+      .insert({
+        project_id: projectId,
+        step_id: stepId,
+        body,
+        created_by: user.id,
+      })
+      .select('id, project_id, step_id, body, created_at')
+      .single()
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to post project step comment', error)
+      setProjectCommentsError('Failed to post project step comment')
+    } else if (data) {
+      setProjectComments((prev) => [data, ...prev])
+      setNewProjectComments((prev) => {
+        const next = { ...prev }
+        delete next[key]
+        return next
+      })
+    }
+
+    setIsSubmittingProjectCommentKey(null)
+  }
+
+  const handleOpenProjectInWorkflow = (project: Project) => {
+    const process = processes.find((p) => p.id === project.process_id)
+    if (!process) return
+
+    handleSelectProcess(process.slug, process.id)
+    setActivePage('workflow')
+
+    if (project.current_step_id) {
+      setSelectedStepId(project.current_step_id)
+    }
   }
 
   const handleResolveComment = async (id: string) => {
@@ -423,6 +943,36 @@ function App() {
 
   const handleRefreshFlow = () => {
     setRefreshCounter((value) => value + 1)
+  }
+
+  const handleAddRole = (event: FormEvent) => {
+    event.preventDefault()
+    const name = newRoleName.trim()
+    if (!name) return
+    setCustomRoles((prev) => {
+      if (prev.includes(name) || ROLE_OPTIONS.includes(name)) return prev
+      return [...prev, name]
+    })
+    setNewRoleName('')
+  }
+
+  const handleRemoveRole = (role: string) => {
+    // Do not allow removing a role that is still used by any step
+    const isUsed = steps.some((step) => {
+      const roles = (step.role ?? '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+      return roles.includes(role)
+    })
+
+    if (isUsed) {
+      setRolesError(`Cannot remove role "${role}" because it is still used in one or more steps.`)
+      return
+    }
+
+    setCustomRoles((prev) => prev.filter((item) => item !== role))
+    setRolesError(null)
   }
 
   const handleCreateProcess = async (event: FormEvent) => {
@@ -745,6 +1295,16 @@ function App() {
     [processes],
   )
 
+  const dynamicRoleOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [...ROLE_OPTIONS, ...customRoles.map((role) => role.trim()).filter((role) => role.length > 0)],
+        ),
+      ),
+    [customRoles],
+  )
+
   const availableLanes = useMemo(
     () =>
       Array.from(
@@ -808,7 +1368,6 @@ function App() {
           </div>
           <div className="flex items-center gap-3 text-[11px] text-slate-400">
             <div className="hidden items-center gap-2 md:flex">
-              <span className="text-slate-500">Supabase · live processes</span>
               <span className="inline-flex items-center gap-1 rounded-full border border-nest-gold/25 bg-nest-surface/60 px-2.5 py-1 text-[10px] uppercase tracking-wide text-nest-gold">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                 Beta
@@ -833,7 +1392,79 @@ function App() {
                     Sign out
                   </button>
                 </>
-              ) : (
+              ) : activePage === 'settings' ? (
+        <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-4 px-6 pb-6 pt-4">
+          <section className="flex-1 rounded-2xl border border-white/5 bg-nest-surface/80 p-4 text-[11px] text-slate-100 shadow-soft-elevated">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  Settings
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  Manage your profile information and preferred role.
+                </p>
+              </div>
+            </div>
+            {!user ? (
+              <p className="text-[11px] text-slate-500">
+                You must be signed in to view and edit your settings.
+              </p>
+            ) : (
+              <form className="max-w-md space-y-3" onSubmit={handleSaveProfile}>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <div>
+                    <p className="text-[10px] text-slate-400">First name</p>
+                    <input
+                      className="mt-0.5 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                      value={profileFirstName}
+                      onChange={(event) => setProfileFirstName(event.target.value)}
+                      disabled={isLoadingProfile || isSavingProfile}
+                    />
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-slate-400">Last name</p>
+                    <input
+                      className="mt-0.5 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                      value={profileLastName}
+                      onChange={(event) => setProfileLastName(event.target.value)}
+                      disabled={isLoadingProfile || isSavingProfile}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[10px] text-slate-400">Role</p>
+                  <select
+                    className="mt-0.5 w-full rounded-xl border border-white/10 bg-black/40 px-2.5 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                    value={profileRole}
+                    onChange={(event) => setProfileRole(event.target.value)}
+                    disabled={isLoadingProfile || isSavingProfile}
+                  >
+                    <option value="">Select role</option>
+                    {[...ROLE_OPTIONS, ...customRoles].map((role) => (
+                      <option key={role} value={role}>
+                        {role}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {profileError && (
+                  <p className="text-[10px] text-red-400">{profileError}</p>
+                )}
+                {profileSuccess && (
+                  <p className="text-[10px] text-emerald-400">{profileSuccess}</p>
+                )}
+                <button
+                  type="submit"
+                  disabled={isLoadingProfile || isSavingProfile}
+                  className="rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isSavingProfile ? 'Saving...' : 'Save profile'}
+                </button>
+              </form>
+            )}
+          </section>
+        </main>
+      ) : (
                 <form className="flex items-center gap-1" onSubmit={handlePasswordLogin}>
                   <input
                     className="w-32 rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 sm:w-40"
@@ -860,16 +1491,92 @@ function App() {
               )}
             </div>
           </div>
+          <div className="flex items-center gap-3 text-[11px] text-slate-400">
+            <div className="hidden items-center gap-2 md:flex">
+              <span className="inline-flex items-center gap-1 rounded-full border border-nest-gold/25 bg-nest-surface/60 px-2.5 py-1 text-[10px] uppercase tracking-wide text-nest-gold">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                Beta
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setActivePage('workflow')}
+                className={`rounded-full border px-2.5 py-0.5 text-[10px] ${
+                  activePage === 'workflow'
+                    ? 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
+                    : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
+                }`}
+              >
+                Workflows
+              </button>
+              <button
+                type="button"
+                onClick={() => setActivePage('projects')}
+                className={`rounded-full border px-2.5 py-0.5 text-[10px] ${
+                  activePage === 'projects'
+                    ? 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
+                    : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
+                }`}
+              >
+                Projects
+              </button>
+              <button
+                type="button"
+                onClick={() => setActivePage('wiki')}
+                className={`rounded-full border px-2.5 py-0.5 text-[10px] ${
+                  activePage === 'wiki'
+                    ? 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
+                    : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
+                }`}
+              >
+                Wiki
+              </button>
+              {user && (
+                <button
+                  type="button"
+                  onClick={() => setActivePage('settings')}
+                  className={`rounded-full border px-2.5 py-0.5 text-[10px] ${
+                    activePage === 'settings'
+                      ? 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
+                      : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
+                  }`}
+                >
+                  Settings
+                </button>
+              )}
+              {wikiUrl && (
+                <a
+                  href={wikiUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-full border border-white/10 bg-black/40 px-2.5 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+                >
+                  External wiki
+                </a>
+              )}
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => setIsSettingsOpen(true)}
+                  className="flex h-6 w-6 items-center justify-center rounded-full border border-white/10 bg-black/40 text-[11px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+                  aria-label="Admin settings"
+                >
+                  ⚙
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </header>
-
-      <main className="mx-auto flex w-full max-w-7xl flex-1 gap-4 px-6 pb-6 pt-4">
-        {/* Process list */}
-        <aside
-          className={`hidden shrink-0 flex-col rounded-2xl border border-white/5 bg-nest-surface/80 shadow-soft-elevated md:flex ${
-            isSidebarCollapsed ? 'w-10 p-2 items-center' : 'w-72 p-3'
-          }`}
-        >
+      {activePage === 'workflow' ? (
+        <main className="mx-auto flex w-full max-w-7xl flex-1 gap-4 px-6 pb-6 pt-4">
+          {/* Process list */}
+          <aside
+            className={`hidden shrink-0 flex-col rounded-2xl border border-white/5 bg-nest-surface/80 shadow-soft-elevated md:flex ${
+              isSidebarCollapsed ? 'w-10 p-2 items-center' : 'w-72 p-3'
+            }`}
+          >
           <div className="mb-3 flex w-full items-center justify-between gap-2">
             <div className="flex items-center gap-1">
               <button
@@ -1104,6 +1811,7 @@ function App() {
                   onConnect={handleConnect}
                   onNodeClick={(_, node) => handleSelectStep(node.id)}
                   onPaneClick={() => setSelectedStepId(null)}
+                  onInit={(instance) => setReactFlowInstance(instance)}
                 >
                   <Background color="#111827" gap={24} />
                   <Controls position="bottom-right" />
@@ -1179,26 +1887,49 @@ function App() {
                     value={newStepTitle}
                     onChange={(event) => setNewStepTitle(event.target.value)}
                   />
-                  <div className="flex gap-2">
+                  <div className="space-y-2">
+                    <div className="flex flex-col gap-1">
+                      <p className="text-[10px] text-slate-500">Roles (multi-select)</p>
+                      <div className="flex flex-wrap gap-1">
+                        {dynamicRoleOptions.map((role) => {
+                          const selectedRoles = newStepRole
+                            .split(',')
+                            .map((value) => value.trim())
+                            .filter((value) => value.length > 0)
+                          const isSelected = selectedRoles.includes(role)
+                          return (
+                            <button
+                              key={role}
+                              type="button"
+                              onClick={() => {
+                                const current = newStepRole
+                                  .split(',')
+                                  .map((value) => value.trim())
+                                  .filter((value) => value.length > 0)
+                                const next = isSelected
+                                  ? current.filter((value) => value !== role)
+                                  : [...current, role]
+                                setNewStepRole(next.join(', '))
+                              }}
+                              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${
+                                isSelected
+                                  ? 'border-nest-gold/60 bg-nest-gold/20 text-nest-gold'
+                                  : 'border-white/10 bg-black/40 text-slate-200 hover:border-nest-gold/40 hover:text-nest-gold'
+                              }`}
+                            >
+                              {role}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
                     <select
-                      className="w-1/2 rounded-xl border border-white/10 bg-black/40 px-2.5 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                      value={newStepRole}
-                      onChange={(event) => setNewStepRole(event.target.value)}
-                    >
-                      <option value="">Role</option>
-                      {ROLE_OPTIONS.map((role) => (
-                        <option key={role} value={role}>
-                          {role}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      className="w-1/2 rounded-xl border border-white/10 bg-black/40 px-2.5 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                      className="w-full rounded-xl border border-white/10 bg-black/40 px-2.5 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
                       value={newStepLane}
                       onChange={(event) => setNewStepLane(event.target.value)}
                     >
                       <option value="">Lane</option>
-                      {LANE_OPTIONS.map((lane) => (
+                      {availableLanes.map((lane) => (
                         <option key={lane} value={lane}>
                           {lane}
                         </option>
@@ -1400,13 +2131,17 @@ function App() {
               className="h-20 w-full resize-none rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
               value={newComment}
               onChange={(event) => setNewComment(event.target.value)}
-              disabled={isSubmittingComment || !supabase}
-              placeholder="Leave an anonymous comment or improvement suggestion for this process..."
+              disabled={isSubmittingComment || !supabase || !user}
+              placeholder={
+                user
+                  ? 'Leave a comment or improvement suggestion for this process...'
+                  : 'Sign in to leave a comment on this process.'
+              }
             />
             <div className="flex items-center justify-between gap-2">
               <button
                 type="submit"
-                disabled={isSubmittingComment || !supabase}
+                disabled={isSubmittingComment || !supabase || !user}
                 className="rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isSubmittingComment ? 'Posting...' : 'Post comment'}
@@ -1415,6 +2150,465 @@ function App() {
           </form>
         </aside>
       </main>
+      ) : activePage === 'projects' ? (
+        <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-4 px-6 pb-6 pt-4">
+          <section className="flex-1 rounded-2xl border border-white/5 bg-nest-surface/80 p-4 text-[11px] text-slate-100 shadow-soft-elevated">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  Projects
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  Create projects from process templates and track where each one is in the workflow.
+                </p>
+              </div>
+              <span className="text-[10px] text-slate-500">
+                {projects.length} project{projects.length === 1 ? '' : 's'} · {processes.length} template
+                {processes.length === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div className="grid gap-4 md:grid-cols-[minmax(0,1.1fr)_minmax(0,1.5fr)]">
+              <form className="space-y-3" onSubmit={handleCreateProject}>
+                <div>
+                  <p className="text-[10px] font-semibold text-slate-300">New project</p>
+                  <p className="text-[10px] text-slate-500">
+                    {user
+                      ? 'Pick a process template and give the project a clear name (e.g. Renovation – Penthouse A).'
+                      : 'Sign in to create projects from process templates.'}
+                  </p>
+                </div>
+                <input
+                  className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                  placeholder="Project name"
+                  value={newProjectName}
+                  onChange={(event) => setNewProjectName(event.target.value)}
+                  disabled={!user}
+                />
+                <select
+                  className="w-full rounded-xl border border-white/10 bg-black/40 px-2.5 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                  value={newProjectProcessId}
+                  onChange={(event) => setNewProjectProcessId(event.target.value)}
+                  disabled={!user}
+                >
+                  <option value="">Select process template</option>
+                  {processes.map((process) => (
+                    <option key={process.id} value={process.id}>
+                      {process.name}
+                    </option>
+                  ))}
+                </select>
+                {projectFormError && (
+                  <p className="text-[10px] text-red-400">{projectFormError}</p>
+                )}
+                <button
+                  type="submit"
+                  disabled={isCreatingProject || !user}
+                  className="w-full rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isCreatingProject ? 'Creating...' : 'Create project'}
+                </button>
+              </form>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-semibold text-slate-300">Projects overview</p>
+                  {isLoadingProjects && (
+                    <span className="text-[10px] text-slate-500">Loading...</span>
+                  )}
+                </div>
+                {projectsError && (
+                  <p className="text-[10px] text-red-400">{projectsError}</p>
+                )}
+                {projects.length === 0 ? (
+                  <p className="text-[11px] text-slate-500">
+                    No projects yet. Create one from a process template on the left.
+                  </p>
+                ) : (
+                  <div className="max-h-[420px] space-y-2 overflow-y-auto">
+                    {projects.map((project) => {
+                      const process = processes.find((p) => p.id === project.process_id)
+                      const stepsForProcess = projectSteps.filter(
+                        (step) => step.process_id === project.process_id,
+                      )
+                      const currentStep = project.current_step_id
+                        ? stepsForProcess.find((step) => step.id === project.current_step_id)
+                        : null
+
+                      const stepComments: ProjectStepComment[] = currentStep
+                        ? projectComments.filter(
+                            (comment) =>
+                              comment.project_id === project.id &&
+                              comment.step_id === currentStep.id,
+                          )
+                        : []
+
+                      const commentKey = currentStep
+                        ? `${project.id}:${currentStep.id}`
+                        : null
+                      const commentDraft = commentKey
+                        ? newProjectComments[commentKey] ?? ''
+                        : ''
+
+                      return (
+                        <div
+                          key={project.id}
+                          className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-[11px]"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-[11px] font-semibold text-slate-100">
+                                {project.name}
+                              </p>
+                              <p className="mt-0.5 text-[10px] text-slate-500">
+                                Template:{' '}
+                                {process ? process.name : 'Unknown process'}
+                              </p>
+                            </div>
+                            <div className="flex flex-col items-end gap-1 text-[10px] text-slate-400">
+                              <span className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5">
+                                {project.status || 'active'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenProjectInWorkflow(project)}
+                                className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+                              >
+                                Open in workflow
+                              </button>
+                            </div>
+                          </div>
+                          <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1.2fr)]">
+                            <div className="space-y-1">
+                              <p className="text-[10px] text-slate-400">Current step</p>
+                              <select
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-2.5 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                                value={project.current_step_id ?? ''}
+                                onChange={(event) =>
+                                  void handleChangeProjectStep(
+                                    project.id,
+                                    event.target.value ? event.target.value : null,
+                                  )
+                                }
+                                disabled={!user}
+                              >
+                                <option value="">Not started</option>
+                                {stepsForProcess.map((step) => (
+                                  <option key={step.id} value={step.id}>
+                                    {step.order_index}. {step.title}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <p className="text-[10px] text-slate-400">Progress</p>
+                              <p className="text-[10px] text-slate-300">
+                                {currentStep
+                                  ? `${currentStep.order_index}. ${currentStep.title}`
+                                  : 'Not started yet.'}
+                              </p>
+                              {currentStep?.description && (
+                                <p className="text-[10px] text-slate-400">
+                                  {currentStep.description}
+                                </p>
+                              )}
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                <button
+                                  type="button"
+                                  disabled={stepsForProcess.length === 0 || !currentStep || !user}
+                                  onClick={() => {
+                                    if (stepsForProcess.length === 0 || !currentStep) return
+                                    const index = stepsForProcess.findIndex(
+                                      (step) => step.id === currentStep.id,
+                                    )
+                                    if (index <= 0) return
+                                    const previous = stepsForProcess[index - 1]
+                                    void handleChangeProjectStep(project.id, previous.id)
+                                  }}
+                                  className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Previous
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={stepsForProcess.length === 0 || !user}
+                                  onClick={() => {
+                                    if (stepsForProcess.length === 0) return
+                                    if (!currentStep) {
+                                      const first = stepsForProcess[0]
+                                      void handleChangeProjectStep(project.id, first.id)
+                                      return
+                                    }
+                                    const index = stepsForProcess.findIndex(
+                                      (step) => step.id === currentStep.id,
+                                    )
+                                    if (index < 0) return
+                                    if (index >= stepsForProcess.length - 1) return
+                                    const next = stepsForProcess[index + 1]
+                                    void handleChangeProjectStep(project.id, next.id)
+                                  }}
+                                  className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-300 hover:border-emerald-400 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Done
+                                </button>
+                              </div>
+                              <div className="mt-2 space-y-1 rounded-lg border border-white/10 bg-black/30 p-2">
+                                <p className="text-[10px] font-semibold text-slate-300">
+                                  Step comments
+                                </p>
+                                {!currentStep ? (
+                                  <p className="text-[10px] text-slate-500">
+                                    Start the project to comment on steps.
+                                  </p>
+                                ) : stepComments.length === 0 ? (
+                                  <p className="text-[10px] text-slate-500">
+                                    No comments yet for this step.
+                                  </p>
+                                ) : (
+                                  <div className="space-y-1 max-h-24 overflow-y-auto">
+                                    {stepComments.map((comment) => (
+                                      <div
+                                        key={comment.id}
+                                        className="rounded border border-white/10 bg-black/40 px-2 py-1"
+                                      >
+                                        <p className="text-[10px] text-slate-200 whitespace-pre-wrap">
+                                          {comment.body}
+                                        </p>
+                                        <p className="mt-0.5 text-[9px] text-slate-500">
+                                          {new Date(comment.created_at).toLocaleString()}
+                                        </p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {projectCommentsError && (
+                                  <p className="text-[10px] text-red-400">
+                                    {projectCommentsError}
+                                  </p>
+                                )}
+                                {currentStep && (
+                                  <form
+                                    className="space-y-1"
+                                    onSubmit={(event) =>
+                                      void handleSubmitProjectStepComment(
+                                        event,
+                                        project.id,
+                                        currentStep.id,
+                                      )
+                                    }
+                                  >
+                                    <textarea
+                                      className="h-12 w-full resize-none rounded border border-white/10 bg-black/40 px-2 py-1 text-[10px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                                      value={commentDraft}
+                                      onChange={(event) => {
+                                        if (!commentKey) return
+                                        const value = event.target.value
+                                        setNewProjectComments((prev) => ({
+                                          ...prev,
+                                          [commentKey]: value,
+                                        }))
+                                      }}
+                                      disabled={!user || (commentKey !== null && isSubmittingProjectCommentKey === commentKey)}
+                                      placeholder={
+                                        user
+                                          ? 'Add a note or clarification for this project step...'
+                                          : 'Sign in to comment on this project step.'
+                                      }
+                                    />
+                                    <div className="flex justify-end">
+                                      <button
+                                        type="submit"
+                                        disabled=
+                                          {!user ||
+                                            !commentKey ||
+                                            isSubmittingProjectCommentKey === commentKey}
+                                        className="rounded-full bg-nest-gold px-2.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        {commentKey && isSubmittingProjectCommentKey === commentKey
+                                          ? 'Posting...'
+                                          : 'Post'}
+                                      </button>
+                                    </div>
+                                  </form>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        </main>
+      ) : (
+        <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-4 px-6 pb-6 pt-4">
+          <section className="flex-1 rounded-2xl border border-white/5 bg-nest-surface/80 p-4 text-[11px] text-slate-100 shadow-soft-elevated">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  Wiki · Internal regulations
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  Central reference for company processes and regulations.
+                </p>
+              </div>
+              {isAdmin && !isEditingWiki && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setWikiDraftTitle(wikiTitle)
+                    setWikiDraftContent(wikiContent)
+                    setWikiDraftCategories(wikiCategories)
+                    setIsEditingWiki(true)
+                  }}
+                  className="rounded-full border border-nest-gold/40 bg-black/40 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-nest-gold hover:bg-nest-gold/10"
+                >
+                  Edit
+                </button>
+              )}
+            </div>
+            {wikiError && (
+              <p className="mb-2 text-[10px] text-red-400">{wikiError}</p>
+            )}
+            {isLoadingWiki ? (
+              <p className="text-[11px] text-slate-500">Loading wiki...</p>
+            ) : isEditingWiki && isAdmin ? (
+              <form className="space-y-3" onSubmit={handleSaveWiki}>
+                <input
+                  className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                  value={wikiDraftTitle}
+                  onChange={(event) => setWikiDraftTitle(event.target.value)}
+                />
+                <textarea
+                  className="min-h-[220px] w-full resize-y rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                  value={wikiDraftContent}
+                  onChange={(event) => setWikiDraftContent(event.target.value)}
+                  placeholder="Write your company regulations here..."
+                />
+                <input
+                  className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                  value={wikiDraftCategories}
+                  onChange={(event) => setWikiDraftCategories(event.target.value)}
+                  placeholder="Categories (comma-separated, e.g. Safety, Legal, Operations)"
+                />
+                <div className="flex items-center gap-2">
+                  <button
+                    type="submit"
+                    disabled={isSavingWiki}
+                    className="rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isSavingWiki ? 'Saving...' : 'Save wiki'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsEditingWiki(false)
+                      setWikiError(null)
+                    }}
+                    className="rounded-full border border-white/10 bg-black/40 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-200 hover:border-nest-gold/40 hover:text-nest-gold"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <article className="max-h-[520px] overflow-y-auto rounded-2xl border border-white/10 bg-black/30 px-4 py-3">
+                <h2 className="mb-1 text-[12px] font-semibold text-slate-100">{wikiTitle}</h2>
+                {wikiCategories && (
+                  <p className="mb-2 text-[10px] text-slate-400">
+                    Categories: {wikiCategories}
+                  </p>
+                )}
+                {wikiContent ? (
+                  <p className="whitespace-pre-wrap text-[11px] text-slate-200">{wikiContent}</p>
+                ) : (
+                  <p className="text-[11px] text-slate-500">
+                    No wiki content yet. {isAdmin ? 'Click Edit to add your first version.' : 'Ask an admin to add the regulations.'}
+                  </p>
+                )}
+              </article>
+            )}
+          </section>
+        </main>
+      )}
+      {isAdmin && isSettingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-nest-surface/95 p-4 text-[11px] text-slate-100 shadow-soft-elevated">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                Admin · Settings
+              </p>
+              <button
+                type="button"
+                onClick={() => setIsSettingsOpen(false)}
+                className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+              >
+                Close
+              </button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <p className="text-[10px] font-semibold text-slate-300">Wiki link</p>
+                <p className="mb-1 text-[10px] text-slate-500">
+                  Paste the URL of your internal wiki or regulations page. It will appear as a Wiki button in the
+                  header.
+                </p>
+                <input
+                  className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                  placeholder="https://wiki.your-company.com/regulations"
+                  value={wikiUrl}
+                  onChange={(event) => setWikiUrl(event.target.value)}
+                />
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold text-slate-300">Company roles</p>
+                <p className="mb-1 text-[10px] text-slate-500">
+                  These roles are available when assigning responsibilities and lanes to steps.
+                </p>
+                <div className="mb-1 flex flex-wrap gap-1">
+                  {ROLE_OPTIONS.map((role) => (
+                    <span
+                      key={role}
+                      className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-slate-200"
+                    >
+                      {role}
+                    </span>
+                  ))}
+                  {customRoles.map((role) => (
+                    <button
+                      key={role}
+                      type="button"
+                      onClick={() => handleRemoveRole(role)}
+                      className="inline-flex items-center gap-1 rounded-full border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[10px] text-rose-100 hover:border-rose-400 hover:bg-rose-500/20"
+                    >
+                      <span>{role}</span>
+                      <span className="text-[11px]">×</span>
+                    </button>
+                  ))}
+                </div>
+                {rolesError && (
+                  <p className="mb-1 text-[10px] text-red-400">{rolesError}</p>
+                )}
+                <form className="mt-1 flex gap-2" onSubmit={handleAddRole}>
+                  <input
+                    className="flex-1 rounded-full border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                    placeholder="Add custom role (e.g. Legal)"
+                    value={newRoleName}
+                    onChange={(event) => setNewRoleName(event.target.value)}
+                  />
+                  <button
+                    type="submit"
+                    className="rounded-full border border-nest-gold/40 bg-nest-gold/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-nest-gold hover:bg-nest-gold/20"
+                  >
+                    Add
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Print-only workflow export (A4-friendly) */}
       <div id="print-workflow">
         <div className="print-container">
