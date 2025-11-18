@@ -1,0 +1,120 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'SF Pro Text',
+    system-ui, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: dark;
+  color: #f9fafb;
+  background-color: #050608;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  font-weight: 500;
+  color: #e2c76a;
+  text-decoration: none;
+}
+a:hover {
+  color: #f5e3a6;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: radial-gradient(circle at top, #111827 0, #050608 55%, #020617 100%);
+  color: #f9fafb;
+}
+
+h1 {
+  font-size: 3.2rem;
+  line-height: 1.1;
+}
+
+button {
+  font-family: inherit;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color: #0b1120;
+    background-color: #f9fafb;
+  }
+}
+
+@media print {
+  body {
+    margin: 0;
+    background: #ffffff;
+    color: #0f172a;
+  }
+
+  #root > * {
+    display: none !important;
+  }
+
+  #print-workflow {
+    display: block !important;
+  }
+
+  #print-workflow .print-container {
+    box-sizing: border-box;
+    width: 210mm;
+    min-height: 297mm;
+    padding: 20mm 15mm;
+    margin: 0 auto;
+    background: #ffffff;
+    color: #0f172a;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'SF Pro Text',
+      system-ui, sans-serif;
+    font-size: 11px;
+  }
+
+  .print-header {
+    border-bottom: 1px solid #e5e7eb;
+    padding-bottom: 8px;
+    margin-bottom: 12px;
+  }
+
+  .print-title {
+    font-size: 18px;
+    margin: 0;
+  }
+
+  .print-subtitle {
+    margin: 4px 0 0;
+    color: #6b7280;
+    font-size: 11px;
+  }
+
+  .print-section-title {
+    font-size: 12px;
+    margin: 12px 0 6px;
+  }
+
+  .print-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10px;
+  }
+
+  .print-table th,
+  .print-table td {
+    border: 1px solid #e5e7eb;
+    padding: 4px 6px;
+    vertical-align: top;
+  }
+
+  .print-table th {
+    background: #f3f4f6;
+  }
+}
