@@ -39,7 +39,7 @@ type ProcessStep = {
   description: string | null
   role: string | null
   order_index: number
-  lane: string | null
+  duration_days: number | null
 }
 
 type ProcessTransition = {
@@ -65,6 +65,7 @@ type ProjectStepSummary = {
   title: string
   order_index: number
   description: string | null
+   duration_days: number | null
 }
 
 type ProjectStepComment = {
@@ -73,6 +74,7 @@ type ProjectStepComment = {
   step_id: string
   body: string
   created_at: string
+  created_by: string | null
 }
 
 const ADMIN_EMAIL = 'captain-pavlos@outlook.com'
@@ -105,8 +107,6 @@ const ROLE_COLORS: Record<string, { border: string; background: string; badge: s
     badge: 'border-orange-400/50 bg-orange-400/10 text-orange-200',
   },
 }
-
-const ROLE_OPTIONS: string[] = ['Client', 'MD', 'OPS', 'PM', 'PM & OPS']
 
 function getRoleColors(role: string | null): { border: string; background: string } {
   const key = role?.trim() || 'Unassigned'
@@ -159,11 +159,11 @@ function App() {
 
   const [newStepTitle, setNewStepTitle] = useState('')
   const [newStepRole, setNewStepRole] = useState('')
-  const [newStepLane, setNewStepLane] = useState('')
   const [newStepOrder, setNewStepOrder] = useState('0')
   const [isCreatingStep, setIsCreatingStep] = useState(false)
   const [stepFormError, setStepFormError] = useState<string | null>(null)
   const [newStepDescription, setNewStepDescription] = useState('')
+  const [newStepDuration, setNewStepDuration] = useState('')
 
   const [transitionFormError, setTransitionFormError] = useState<string | null>(null)
 
@@ -203,10 +203,16 @@ function App() {
 
   const [projectSteps, setProjectSteps] = useState<ProjectStepSummary[]>([])
 
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
+  const [editingProjectName, setEditingProjectName] = useState('')
+  const [isUpdatingProjectNameId, setIsUpdatingProjectNameId] = useState<string | null>(null)
+  const [deletingProjectCommentId, setDeletingProjectCommentId] = useState<string | null>(null)
+  const [expandedProjectHistoryId, setExpandedProjectHistoryId] = useState<string | null>(null)
+
   const [profileFirstName, setProfileFirstName] = useState('')
   const [profileLastName, setProfileLastName] = useState('')
   const [profileRole, setProfileRole] = useState('')
-  const [isLoadingProfile, setIsLoadingProfile] = useState(false)
+  const [, setIsLoadingProfile] = useState(false)
   const [isSavingProfile, setIsSavingProfile] = useState(false)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [profileSuccess, setProfileSuccess] = useState<string | null>(null)
@@ -242,6 +248,9 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [newRoleName, setNewRoleName] = useState('')
   const [rolesError, setRolesError] = useState<string | null>(null)
+
+  const [appMessage] = useState<string | null>(null)
+  const [appMessageType] = useState<'success' | 'error'>('success')
 
   const isAdmin = user?.email === ADMIN_EMAIL
 
@@ -396,7 +405,7 @@ function App() {
 
       const { data: stepsData, error: stepsError } = await client
         .from('process_steps')
-        .select('id, process_id, title, order_index, description')
+        .select('id, process_id, title, order_index, description, duration_days')
         .in('process_id', processIds)
         .order('order_index', { ascending: true })
 
@@ -415,6 +424,7 @@ function App() {
           title: step.title,
           order_index: step.order_index,
           description: (step as { description?: string | null }).description ?? null,
+          duration_days: (step as { duration_days?: number | null }).duration_days ?? null,
         }))
         setProjectSteps(summaries)
       }
@@ -423,7 +433,7 @@ function App() {
 
       const { data: commentsData, error: commentsError } = await client
         .from('project_step_comments')
-        .select('id, project_id, step_id, body, created_at')
+        .select('id, project_id, step_id, body, created_at, created_by')
         .in('project_id', projectIds)
         .order('created_at', { ascending: false })
 
@@ -468,7 +478,7 @@ function App() {
       const [stepsResult, transitionsResult] = await Promise.all([
         client
           .from('process_steps')
-          .select('id, process_id, title, description, role, order_index, lane')
+          .select('id, process_id, title, description, role, order_index, duration_days')
           .eq('process_id', selectedProcessId)
           .order('order_index', { ascending: true }),
         client
@@ -521,7 +531,7 @@ function App() {
 
       const { data, error } = await client
         .from('profiles')
-        .select('first_name, last_name, role')
+        .select('full_name, role, email')
         .eq('id', user.id)
         .maybeSingle()
 
@@ -532,8 +542,11 @@ function App() {
         console.error('Failed to load profile', error)
         setProfileError('Failed to load profile')
       } else if (data) {
-        setProfileFirstName((data as { first_name?: string | null }).first_name ?? '')
-        setProfileLastName((data as { last_name?: string | null }).last_name ?? '')
+        const fullName = (data as { full_name?: string | null }).full_name ?? ''
+        const [first = '', ...rest] = fullName.split(' ')
+        const last = rest.join(' ')
+        setProfileFirstName(first)
+        setProfileLastName(last)
         setProfileRole((data as { role?: string | null }).role ?? '')
         setProfileError(null)
       } else {
@@ -654,6 +667,18 @@ function App() {
     const lastName = profileLastName.trim()
     const role = profileRole.trim()
 
+    if (!firstName && !lastName) {
+      setProfileError('Display name is required.')
+      setProfileSuccess(null)
+      return
+    }
+
+    if (!role) {
+      setProfileError('Company role is required.')
+      setProfileSuccess(null)
+      return
+    }
+
     setIsSavingProfile(true)
     setProfileError(null)
     setProfileSuccess(null)
@@ -663,22 +688,25 @@ function App() {
       .upsert(
         {
           id: user.id,
-          first_name: firstName || null,
-          last_name: lastName || null,
+          full_name: `${firstName} ${lastName}`.trim() || null,
           role: role || null,
         },
         { onConflict: 'id' },
       )
-      .select('first_name, last_name, role')
+      .select('full_name, role')
       .single()
 
     if (error) {
       // eslint-disable-next-line no-console
       console.error('Failed to save profile', error)
-      setProfileError('Failed to save profile')
+      const err = error as { message?: string; details?: string }
+      setProfileError(err.message || err.details || 'Failed to save profile')
     } else if (data) {
-      setProfileFirstName((data as { first_name?: string | null }).first_name ?? '')
-      setProfileLastName((data as { last_name?: string | null }).last_name ?? '')
+      const fullName = (data as { full_name?: string | null }).full_name ?? ''
+      const [savedFirst = '', ...rest] = fullName.split(' ')
+      const savedLast = rest.join(' ')
+      setProfileFirstName(savedFirst)
+      setProfileLastName(savedLast)
       setProfileRole((data as { role?: string | null }).role ?? '')
       setProfileSuccess('Profile updated')
     }
@@ -823,7 +851,7 @@ function App() {
         body,
         created_by: user.id,
       })
-      .select('id, project_id, step_id, body, created_at')
+      .select('id, project_id, step_id, body, created_at, created_by')
       .single()
 
     if (error) {
@@ -842,16 +870,73 @@ function App() {
     setIsSubmittingProjectCommentKey(null)
   }
 
-  const handleOpenProjectInWorkflow = (project: Project) => {
-    const process = processes.find((p) => p.id === project.process_id)
-    if (!process) return
+  const handleDeleteProjectStepComment = async (commentId: string) => {
+    if (!supabase) return
+    if (!isAdmin) return
 
-    handleSelectProcess(process.slug, process.id)
-    setActivePage('workflow')
+    setDeletingProjectCommentId(commentId)
+    setProjectCommentsError(null)
 
-    if (project.current_step_id) {
-      setSelectedStepId(project.current_step_id)
+    const { error } = await supabase
+      .from('project_step_comments')
+      .delete()
+      .eq('id', commentId)
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to delete project step comment', error)
+      setProjectCommentsError('Failed to delete project step comment')
+    } else {
+      setProjectComments((prev) => prev.filter((comment) => comment.id !== commentId))
     }
+
+    setDeletingProjectCommentId(null)
+  }
+
+  const handleStartEditProjectName = (project: Project) => {
+    if (!isAdmin) return
+    setEditingProjectId(project.id)
+    setEditingProjectName(project.name)
+  }
+
+  const handleCancelEditProjectName = () => {
+    setEditingProjectId(null)
+    setEditingProjectName('')
+  }
+
+  const handleSaveProjectName = async (event: FormEvent, projectId: string) => {
+    event.preventDefault()
+
+    if (!supabase) return
+    if (!isAdmin) return
+
+    const name = editingProjectName.trim()
+    if (!name) {
+      setProjectsError('Project name is required.')
+      return
+    }
+
+    setIsUpdatingProjectNameId(projectId)
+    setProjectsError(null)
+
+    const { data, error } = await supabase
+      .from('projects')
+      .update({ name })
+      .eq('id', projectId)
+      .select('id, name, process_id, current_step_id, status, created_at')
+      .single()
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to update project name', error)
+      setProjectsError('Failed to update project name')
+    } else if (data) {
+      setProjects((prev) => prev.map((project) => (project.id === projectId ? data : project)))
+      setEditingProjectId(null)
+      setEditingProjectName('')
+    }
+
+    setIsUpdatingProjectNameId(null)
   }
 
   const handleResolveComment = async (id: string) => {
@@ -934,9 +1019,13 @@ function App() {
       if (step) {
         setNewStepTitle(step.title)
         setNewStepRole(step.role ?? '')
-        setNewStepLane(step.lane ?? '')
         setNewStepOrder(String(step.order_index))
         setNewStepDescription(step.description ?? '')
+        setNewStepDuration(
+          step.duration_days !== null && step.duration_days !== undefined
+            ? String(step.duration_days)
+            : '',
+        )
       }
     }
   }
@@ -950,7 +1039,7 @@ function App() {
     const name = newRoleName.trim()
     if (!name) return
     setCustomRoles((prev) => {
-      if (prev.includes(name) || ROLE_OPTIONS.includes(name)) return prev
+      if (prev.includes(name)) return prev
       return [...prev, name]
     })
     setNewRoleName('')
@@ -1100,6 +1189,8 @@ function App() {
     }
 
     const orderIndex = Number(newStepOrder) || 0
+    const durationDaysValue = newStepDuration.trim()
+    const durationDays = durationDaysValue === '' ? null : Number(durationDaysValue) || null
 
     setIsCreatingStep(true)
     setStepFormError(null)
@@ -1109,11 +1200,11 @@ function App() {
         process_id: selectedProcessId,
         title,
         role: newStepRole.trim() || null,
-        lane: newStepLane.trim() || null,
         order_index: orderIndex,
         description: newStepDescription.trim() || null,
+        duration_days: durationDays,
       })
-      .select('id, process_id, title, description, role, order_index, lane')
+      .select('id, process_id, title, description, role, order_index, duration_days')
       .single()
 
     if (error) {
@@ -1124,9 +1215,9 @@ function App() {
       setSteps((prev) => [...prev, data].sort((a, b) => a.order_index - b.order_index))
       setNewStepTitle('')
       setNewStepRole('')
-      setNewStepLane('')
       setNewStepOrder('0')
       setNewStepDescription('')
+      setNewStepDuration('')
     }
     setIsCreatingStep(false)
   }
@@ -1146,6 +1237,8 @@ function App() {
     }
 
     const orderIndex = Number(newStepOrder) || 0
+    const durationDaysValue = newStepDuration.trim()
+    const durationDays = durationDaysValue === '' ? null : Number(durationDaysValue) || null
 
     setIsCreatingStep(true)
     setStepFormError(null)
@@ -1154,12 +1247,12 @@ function App() {
       .update({
         title,
         role: newStepRole.trim() || null,
-        lane: newStepLane.trim() || null,
         order_index: orderIndex,
         description: newStepDescription.trim() || null,
+        duration_days: durationDays,
       })
       .eq('id', selectedStepId)
-      .select('id, process_id, title, description, role, order_index, lane')
+      .select('id, process_id, title, description, role, order_index, duration_days')
       .single()
 
     if (error) {
@@ -1206,7 +1299,19 @@ function App() {
       return { nodes: [], edges: [] }
     }
 
-    const lanes = Array.from(new Set(steps.map((step) => step.lane || 'Unassigned')))
+    const getLaneKey = (step: ProcessStep): string => {
+      const roles = (step.role ?? '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+
+      if (roles.length === 0) return 'Unassigned'
+      if (roles.length === 1) return roles[0]
+
+      return roles.sort((a, b) => a.localeCompare(b)).join(' & ')
+    }
+
+    const lanes = Array.from(new Set(steps.map((step) => getLaneKey(step))))
     const laneIndexMap = new Map<string, number>()
     lanes.forEach((lane, index) => laneIndexMap.set(lane, index))
 
@@ -1221,7 +1326,7 @@ function App() {
     )
 
     const dynamicNodes: Node[] = steps.map((step) => {
-      const laneKey = step.lane || 'Unassigned'
+      const laneKey = getLaneKey(step)
       const laneIndex = laneIndexMap.get(laneKey) ?? 0
       const position = {
         x: laneIndex * xGap,
@@ -1298,23 +1403,9 @@ function App() {
   const dynamicRoleOptions = useMemo(
     () =>
       Array.from(
-        new Set(
-          [...ROLE_OPTIONS, ...customRoles.map((role) => role.trim()).filter((role) => role.length > 0)],
-        ),
+        new Set(customRoles.map((role) => role.trim()).filter((role) => role.length > 0)),
       ),
     [customRoles],
-  )
-
-  const availableLanes = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          steps
-            .map((step) => step.lane || '')
-            .filter((lane) => lane.trim().length > 0),
-        ),
-      ).sort((a, b) => a.localeCompare(b)),
-    [steps],
   )
 
   const visibleComments = useMemo(() => {
@@ -1367,12 +1458,6 @@ function App() {
             </div>
           </div>
           <div className="flex items-center gap-3 text-[11px] text-slate-400">
-            <div className="hidden items-center gap-2 md:flex">
-              <span className="inline-flex items-center gap-1 rounded-full border border-nest-gold/25 bg-nest-surface/60 px-2.5 py-1 text-[10px] uppercase tracking-wide text-nest-gold">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                Beta
-              </span>
-            </div>
             <div className="flex items-center gap-2">
               {user ? (
                 <>
@@ -1392,79 +1477,7 @@ function App() {
                     Sign out
                   </button>
                 </>
-              ) : activePage === 'settings' ? (
-        <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-4 px-6 pb-6 pt-4">
-          <section className="flex-1 rounded-2xl border border-white/5 bg-nest-surface/80 p-4 text-[11px] text-slate-100 shadow-soft-elevated">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                  Settings
-                </p>
-                <p className="text-[11px] text-slate-400">
-                  Manage your profile information and preferred role.
-                </p>
-              </div>
-            </div>
-            {!user ? (
-              <p className="text-[11px] text-slate-500">
-                You must be signed in to view and edit your settings.
-              </p>
-            ) : (
-              <form className="max-w-md space-y-3" onSubmit={handleSaveProfile}>
-                <div className="grid gap-2 md:grid-cols-2">
-                  <div>
-                    <p className="text-[10px] text-slate-400">First name</p>
-                    <input
-                      className="mt-0.5 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                      value={profileFirstName}
-                      onChange={(event) => setProfileFirstName(event.target.value)}
-                      disabled={isLoadingProfile || isSavingProfile}
-                    />
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-slate-400">Last name</p>
-                    <input
-                      className="mt-0.5 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                      value={profileLastName}
-                      onChange={(event) => setProfileLastName(event.target.value)}
-                      disabled={isLoadingProfile || isSavingProfile}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <p className="text-[10px] text-slate-400">Role</p>
-                  <select
-                    className="mt-0.5 w-full rounded-xl border border-white/10 bg-black/40 px-2.5 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                    value={profileRole}
-                    onChange={(event) => setProfileRole(event.target.value)}
-                    disabled={isLoadingProfile || isSavingProfile}
-                  >
-                    <option value="">Select role</option>
-                    {[...ROLE_OPTIONS, ...customRoles].map((role) => (
-                      <option key={role} value={role}>
-                        {role}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                {profileError && (
-                  <p className="text-[10px] text-red-400">{profileError}</p>
-                )}
-                {profileSuccess && (
-                  <p className="text-[10px] text-emerald-400">{profileSuccess}</p>
-                )}
-                <button
-                  type="submit"
-                  disabled={isLoadingProfile || isSavingProfile}
-                  className="rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isSavingProfile ? 'Saving...' : 'Save profile'}
-                </button>
-              </form>
-            )}
-          </section>
-        </main>
-      ) : (
+              ) : (
                 <form className="flex items-center gap-1" onSubmit={handlePasswordLogin}>
                   <input
                     className="w-32 rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 sm:w-40"
@@ -1499,6 +1512,23 @@ function App() {
               </span>
             </div>
             <div className="flex items-center gap-2">
+              {/* Primary tab: Projects */}
+              <button
+                type="button"
+                onClick={() => setActivePage('projects')}
+                className={`rounded-full border px-2.5 py-0.5 text-[10px] ${
+                  activePage === 'projects'
+                    ? 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
+                    : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
+                }`}
+              >
+                Projects
+              </button>
+
+              {/* Separator */}
+              <span className="h-4 w-px bg-white/15" />
+
+              {/* Secondary tabs */}
               <button
                 type="button"
                 onClick={() => setActivePage('workflow')}
@@ -1512,17 +1542,6 @@ function App() {
               </button>
               <button
                 type="button"
-                onClick={() => setActivePage('projects')}
-                className={`rounded-full border px-2.5 py-0.5 text-[10px] ${
-                  activePage === 'projects'
-                    ? 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
-                    : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
-                }`}
-              >
-                Projects
-              </button>
-              <button
-                type="button"
                 onClick={() => setActivePage('wiki')}
                 className={`rounded-full border px-2.5 py-0.5 text-[10px] ${
                   activePage === 'wiki'
@@ -1532,6 +1551,16 @@ function App() {
               >
                 Wiki
               </button>
+              {wikiUrl && (
+                <a
+                  href={wikiUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-full border border-white/10 bg-black/40 px-2.5 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+                >
+                  Drive
+                </a>
+              )}
               {user && (
                 <button
                   type="button"
@@ -1544,16 +1573,6 @@ function App() {
                 >
                   Settings
                 </button>
-              )}
-              {wikiUrl && (
-                <a
-                  href={wikiUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="rounded-full border border-white/10 bg-black/40 px-2.5 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
-                >
-                  External wiki
-                </a>
               )}
               {isAdmin && (
                 <button
@@ -1569,6 +1588,21 @@ function App() {
           </div>
         </div>
       </header>
+
+      {appMessage && (
+        <div className="fixed top-4 right-4 z-40 flex max-w-xs flex-col gap-2 text-[11px]">
+          <div
+            className={`rounded-lg border px-3 py-2 shadow-soft-elevated ${
+              appMessageType === 'success'
+                ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-100'
+                : 'border-red-500/50 bg-red-500/15 text-red-100'
+            }`}
+          >
+            {appMessage}
+          </div>
+        </div>
+      )}
+
       {activePage === 'workflow' ? (
         <main className="mx-auto flex w-full max-w-7xl flex-1 gap-4 px-6 pb-6 pt-4">
           {/* Process list */}
@@ -1878,158 +1912,155 @@ function App() {
                   {processes.find((p) => p.id === selectedProcessId)?.slug ?? 'none selected'}
                 </p>
               </div>
-              <div className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-3">
                 <form className="space-y-2" onSubmit={handleCreateStep}>
                   <p className="text-[10px] font-semibold text-slate-300">Add step</p>
-                  <input
-                    className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                    placeholder="Title (e.g. Qualify lead)"
-                    value={newStepTitle}
-                    onChange={(event) => setNewStepTitle(event.target.value)}
-                  />
-                  <div className="space-y-2">
-                    <div className="flex flex-col gap-1">
-                      <p className="text-[10px] text-slate-500">Roles (multi-select)</p>
-                      <div className="flex flex-wrap gap-1">
-                        {dynamicRoleOptions.map((role) => {
-                          const selectedRoles = newStepRole
-                            .split(',')
-                            .map((value) => value.trim())
-                            .filter((value) => value.length > 0)
-                          const isSelected = selectedRoles.includes(role)
-                          return (
-                            <button
-                              key={role}
-                              type="button"
-                              onClick={() => {
-                                const current = newStepRole
-                                  .split(',')
-                                  .map((value) => value.trim())
-                                  .filter((value) => value.length > 0)
-                                const next = isSelected
-                                  ? current.filter((value) => value !== role)
-                                  : [...current, role]
-                                setNewStepRole(next.join(', '))
-                              }}
-                              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${
-                                isSelected
-                                  ? 'border-nest-gold/60 bg-nest-gold/20 text-nest-gold'
-                                  : 'border-white/10 bg-black/40 text-slate-200 hover:border-nest-gold/40 hover:text-nest-gold'
-                              }`}
-                            >
-                              {role}
-                            </button>
-                          )
-                        })}
+                  <div className="grid gap-2 md:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+                    <div className="space-y-2">
+                      <input
+                        className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                        placeholder="Title (e.g. Qualify lead)"
+                        value={newStepTitle}
+                        onChange={(event) => setNewStepTitle(event.target.value)}
+                      />
+                      <textarea
+                        className="h-20 md:h-full w-full resize-none rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                        placeholder="Step details / notes"
+                        value={newStepDescription}
+                        onChange={(event) => setNewStepDescription(event.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex flex-col gap-1">
+                        <p className="text-[10px] text-slate-500">Roles (multi-select)</p>
+                        <div className="flex flex-wrap gap-1">
+                          {dynamicRoleOptions.map((role) => {
+                            const selectedRoles = newStepRole
+                              .split(',')
+                              .map((value) => value.trim())
+                              .filter((value) => value.length > 0)
+                            const isSelected = selectedRoles.includes(role)
+                            return (
+                              <button
+                                key={role}
+                                type="button"
+                                onClick={() => {
+                                  const current = newStepRole
+                                    .split(',')
+                                    .map((value) => value.trim())
+                                    .filter((value) => value.length > 0)
+                                  const next = isSelected
+                                    ? current.filter((value) => value !== role)
+                                    : [...current, role]
+                                  setNewStepRole(next.join(', '))
+                                }}
+                                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${
+                                  isSelected
+                                    ? 'border-nest-gold/60 bg-nest-gold/20 text-nest-gold'
+                                    : 'border-white/10 bg-black/40 text-slate-200 hover:border-nest-gold/40 hover:text-nest-gold'
+                                }`}
+                              >
+                                {role}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          <input
+                            className="w-24 rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                            placeholder="Order"
+                            value={newStepOrder}
+                            onChange={(event) => setNewStepOrder(event.target.value)}
+                          />
+                          <input
+                            className="w-32 rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                            placeholder="Duration in days (e.g. 0.5)"
+                            value={newStepDuration}
+                            onChange={(event) => setNewStepDuration(event.target.value)}
+                          />
+                        </div>
+                        <p className="text-[10px] text-slate-500">
+                          Duration can be a full day (1) or a fraction (0.5 for half a day).
+                        </p>
+                      </div>
+                      {stepFormError && (
+                        <p className="text-[10px] text-red-400">{stepFormError}</p>
+                      )}
+                      <div className="flex gap-2">
+                        <button
+                          type="submit"
+                          disabled={isCreatingStep || !!selectedStep}
+                          className="flex-1 rounded-full bg-nest-gold px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {isCreatingStep ? 'Adding...' : 'Add NEW Step'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isCreatingStep || !selectedStep}
+                          onClick={handleUpdateStep}
+                          className="flex-1 rounded-full border border-nest-gold/40 bg-black/40 px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-nest-gold shadow-soft-elevated hover:bg-nest-gold/10 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {isCreatingStep ? 'Updating...' : 'Update'}
+                        </button>
+                      </div>
+                      <div className="mt-2 space-y-1 border-t border-red-500/25 pt-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[10px] font-semibold text-red-300">Danger zone</p>
+                        </div>
+                        {transitionFormError && (
+                          <p className="text-[10px] text-red-400">{transitionFormError}</p>
+                        )}
+                        <button
+                          type="button"
+                          disabled={!selectedStep}
+                          onClick={async () => {
+                            if (!supabase || !selectedStepId) return
+                            if (!selectedProcessId) return
+
+                            // Delete comments for this step
+                            await supabase.from('comments').delete().eq('step_id', selectedStepId)
+                            // Delete transitions touching this step
+                            await supabase
+                              .from('process_transitions')
+                              .delete()
+                              .eq('process_id', selectedProcessId)
+                              .or(`from_step_id.eq.${selectedStepId},to_step_id.eq.${selectedStepId}`)
+
+                            const { error } = await supabase
+                              .from('process_steps')
+                              .delete()
+                              .eq('id', selectedStepId)
+
+                            if (error) {
+                              // eslint-disable-next-line no-console
+                              console.error('Failed to delete step', error)
+                              setStepFormError('Failed to delete step')
+                              return
+                            }
+
+                            setSteps((prev) => prev.filter((step) => step.id !== selectedStepId))
+                            setTransitions((prev) =>
+                              prev.filter(
+                                (transition) =>
+                                  transition.from_step_id !== selectedStepId &&
+                                  transition.to_step_id !== selectedStepId,
+                              ),
+                            )
+                            setComments((prev) =>
+                              prev.filter((comment) => comment.step_id !== selectedStepId),
+                            )
+                            setSelectedStepId(null)
+                          }}
+                          className="w-40 ml-auto rounded-full border border-red-500/40 bg-red-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-red-200 shadow-soft-elevated hover:border-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Delete selected step
+                        </button>
                       </div>
                     </div>
-                    <select
-                      className="w-full rounded-xl border border-white/10 bg-black/40 px-2.5 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                      value={newStepLane}
-                      onChange={(event) => setNewStepLane(event.target.value)}
-                    >
-                      <option value="">Lane</option>
-                      {availableLanes.map((lane) => (
-                        <option key={lane} value={lane}>
-                          {lane}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      className="w-24 rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                      placeholder="Order"
-                      value={newStepOrder}
-                      onChange={(event) => setNewStepOrder(event.target.value)}
-                    />
-                    <span className="text-[10px] text-slate-500">Horizontal position</span>
-                  </div>
-                  <textarea
-                    className="h-16 w-full resize-none rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                    placeholder="Step details / notes"
-                    value={newStepDescription}
-                    onChange={(event) => setNewStepDescription(event.target.value)}
-                  />
-                  {stepFormError && (
-                    <p className="text-[10px] text-red-400">{stepFormError}</p>
-                  )}
-                  <div className="flex gap-2">
-                    <button
-                      type="submit"
-                      disabled={isCreatingStep}
-                      className="flex-1 rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {isCreatingStep ? 'Adding...' : 'Add step'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isCreatingStep || !selectedStep}
-                      onClick={handleUpdateStep}
-                      className="flex-1 rounded-full border border-nest-gold/40 bg-black/40 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-nest-gold shadow-soft-elevated hover:bg-nest-gold/10 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {isCreatingStep ? 'Updating...' : 'Update selected step'}
-                    </button>
                   </div>
                 </form>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-[10px] font-semibold text-slate-300">Danger zone</p>
-                    {availableLanes.length > 0 && (
-                      <p className="text-[10px] text-slate-500">
-                        Lanes: {availableLanes.join(', ')}
-                      </p>
-                    )}
-                  </div>
-                  {transitionFormError && (
-                    <p className="text-[10px] text-red-400">{transitionFormError}</p>
-                  )}
-                  <button
-                    type="button"
-                    disabled={!selectedStep}
-                    onClick={async () => {
-                      if (!supabase || !selectedStepId) return
-                      if (!selectedProcessId) return
-
-                      // Delete comments for this step
-                      await supabase.from('comments').delete().eq('step_id', selectedStepId)
-                      // Delete transitions touching this step
-                      await supabase
-                        .from('process_transitions')
-                        .delete()
-                        .eq('process_id', selectedProcessId)
-                        .or(`from_step_id.eq.${selectedStepId},to_step_id.eq.${selectedStepId}`)
-
-                      const { error } = await supabase
-                        .from('process_steps')
-                        .delete()
-                        .eq('id', selectedStepId)
-
-                      if (error) {
-                        // eslint-disable-next-line no-console
-                        console.error('Failed to delete step', error)
-                        setStepFormError('Failed to delete step')
-                        return
-                      }
-
-                      setSteps((prev) => prev.filter((step) => step.id !== selectedStepId))
-                      setTransitions((prev) =>
-                        prev.filter(
-                          (transition) =>
-                            transition.from_step_id !== selectedStepId &&
-                            transition.to_step_id !== selectedStepId,
-                        ),
-                      )
-                      setComments((prev) =>
-                        prev.filter((comment) => comment.step_id !== selectedStepId),
-                      )
-                      setSelectedStepId(null)
-                    }}
-                    className="w-full rounded-full border border-red-500/40 bg-red-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-red-200 shadow-soft-elevated hover:border-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    Delete selected step
-                  </button>
-                </div>
               </div>
             </div>
           )}
@@ -2065,11 +2096,8 @@ function App() {
                     className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] ${getRoleBadgeClasses(selectedStep.role)}`}
                   >
                     <span className="h-1.5 w-1.5 rounded-full bg-current/70" />
-                    {selectedStep.role ?? 'Unassigned'}
+                    {selectedStep.role ? selectedStep.role.trim() : 'Unassigned'}
                   </span>
-                  {selectedStep.lane && (
-                    <span className="text-slate-500">Lane: {selectedStep.lane}</span>
-                  )}
                 </div>
                 <p className="text-[10px] text-slate-400">
                   Order index: <span className="text-slate-200">{selectedStep.order_index}</span>
@@ -2167,50 +2195,10 @@ function App() {
                 {processes.length === 1 ? '' : 's'}
               </span>
             </div>
-            <div className="grid gap-4 md:grid-cols-[minmax(0,1.1fr)_minmax(0,1.5fr)]">
-              <form className="space-y-3" onSubmit={handleCreateProject}>
-                <div>
-                  <p className="text-[10px] font-semibold text-slate-300">New project</p>
-                  <p className="text-[10px] text-slate-500">
-                    {user
-                      ? 'Pick a process template and give the project a clear name (e.g. Renovation – Penthouse A).'
-                      : 'Sign in to create projects from process templates.'}
-                  </p>
-                </div>
-                <input
-                  className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                  placeholder="Project name"
-                  value={newProjectName}
-                  onChange={(event) => setNewProjectName(event.target.value)}
-                  disabled={!user}
-                />
-                <select
-                  className="w-full rounded-xl border border-white/10 bg-black/40 px-2.5 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                  value={newProjectProcessId}
-                  onChange={(event) => setNewProjectProcessId(event.target.value)}
-                  disabled={!user}
-                >
-                  <option value="">Select process template</option>
-                  {processes.map((process) => (
-                    <option key={process.id} value={process.id}>
-                      {process.name}
-                    </option>
-                  ))}
-                </select>
-                {projectFormError && (
-                  <p className="text-[10px] text-red-400">{projectFormError}</p>
-                )}
-                <button
-                  type="submit"
-                  disabled={isCreatingProject || !user}
-                  className="w-full rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isCreatingProject ? 'Creating...' : 'Create project'}
-                </button>
-              </form>
-              <div className="space-y-2">
+            <div className="flex flex-col gap-4 md:flex-row md:items-start">
+              <div className="flex-1 space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-[10px] font-semibold text-slate-300">Projects overview</p>
+                  <p className="text-[10px] font-semibold text-slate-300">Current projects</p>
                   {isLoadingProjects && (
                     <span className="text-[10px] text-slate-500">Loading...</span>
                   )}
@@ -2220,7 +2208,7 @@ function App() {
                 )}
                 {projects.length === 0 ? (
                   <p className="text-[11px] text-slate-500">
-                    No projects yet. Create one from a process template on the left.
+                    No projects yet. Use the New project box on the right to create your first one.
                   </p>
                 ) : (
                   <div className="max-h-[420px] space-y-2 overflow-y-auto">
@@ -2241,6 +2229,45 @@ function App() {
                           )
                         : []
 
+                      const lastStepActivity = stepComments[0] ?? null
+
+                      const previousStepActivities = stepsForProcess
+                        .filter((step) => step.id !== project.current_step_id)
+                        .map((step) => {
+                          const activity = projectComments.find(
+                            (comment) =>
+                              comment.project_id === project.id && comment.step_id === step.id,
+                          )
+                          if (!activity) return null
+                          return { step, activity }
+                        })
+                        .filter(
+                          (
+                            item,
+                          ): item is { step: ProjectStepSummary; activity: ProjectStepComment } =>
+                            item !== null,
+                        )
+
+                      const sortedStepsForProcess = stepsForProcess
+                        .slice()
+                        .sort((a, b) => a.order_index - b.order_index)
+                      const currentIndex = currentStep
+                        ? sortedStepsForProcess.findIndex((step) => step.id === currentStep.id)
+                        : -1
+                      const remainingSteps =
+                        currentIndex >= 0
+                          ? sortedStepsForProcess.slice(currentIndex)
+                          : sortedStepsForProcess
+                      const remainingDuration = remainingSteps.reduce((sum, step) => {
+                        const value = step.duration_days ?? 0
+                        return sum + (Number.isFinite(value) ? value : 0)
+                      }, 0)
+                      const remainingDurationDisplay =
+                        remainingDuration % 1 === 0
+                          ? String(remainingDuration)
+                          : remainingDuration.toFixed(1)
+                      const estimatedFinishDate: string | null = null
+
                       const commentKey = currentStep
                         ? `${project.id}:${currentStep.id}`
                         : null
@@ -2255,49 +2282,78 @@ function App() {
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="min-w-0 flex-1">
-                              <p className="truncate text-[11px] font-semibold text-slate-100">
-                                {project.name}
-                              </p>
-                              <p className="mt-0.5 text-[10px] text-slate-500">
-                                Template:{' '}
-                                {process ? process.name : 'Unknown process'}
-                              </p>
+                              {isAdmin && editingProjectId === project.id ? (
+                                <form
+                                  className="space-y-1"
+                                  onSubmit={(event) => void handleSaveProjectName(event, project.id)}
+                                >
+                                  <input
+                                    className="w-full rounded-xl border border-white/10 bg-black/40 px-2 py-1 text-[10px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                                    value={editingProjectName}
+                                    onChange={(event) => setEditingProjectName(event.target.value)}
+                                  />
+                                  <div className="flex gap-1 text-[9px]">
+                                    <button
+                                      type="submit"
+                                      disabled={isUpdatingProjectNameId === project.id}
+                                      className="rounded-full bg-nest-gold px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      {isUpdatingProjectNameId === project.id ? 'Saving…' : 'Save name'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={handleCancelEditProjectName}
+                                      className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[9px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </form>
+                              ) : (
+                                <>
+                                  <div className="flex items-center gap-2">
+                                    <p className="truncate text-[11px] font-semibold text-slate-100">
+                                      {project.name}
+                                    </p>
+                                    {isAdmin && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleStartEditProjectName(project)}
+                                        className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[9px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+                                      >
+                                        Edit
+                                      </button>
+                                    )}
+                                  </div>
+                                  <p className="mt-0.5 text-[10px] text-slate-500">
+                                    Template:{' '}
+                                    {process ? process.name : 'Unknown process'}
+                                  </p>
+                                </>
+                              )}
                             </div>
                             <div className="flex flex-col items-end gap-1 text-[10px] text-slate-400">
                               <span className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5">
                                 {project.status || 'active'}
                               </span>
-                              <button
-                                type="button"
-                                onClick={() => handleOpenProjectInWorkflow(project)}
-                                className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
-                              >
-                                Open in workflow
-                              </button>
+                              {previousStepActivities.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedProjectHistoryId((current) =>
+                                      current === project.id ? null : project.id,
+                                    )
+                                  }
+                                  className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[9px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+                                >
+                                  {expandedProjectHistoryId === project.id
+                                    ? 'Hide history'
+                                    : 'Previous steps'}
+                                </button>
+                              )}
                             </div>
                           </div>
-                          <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1.2fr)]">
-                            <div className="space-y-1">
-                              <p className="text-[10px] text-slate-400">Current step</p>
-                              <select
-                                className="w-full rounded-xl border border-white/10 bg-black/40 px-2.5 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                                value={project.current_step_id ?? ''}
-                                onChange={(event) =>
-                                  void handleChangeProjectStep(
-                                    project.id,
-                                    event.target.value ? event.target.value : null,
-                                  )
-                                }
-                                disabled={!user}
-                              >
-                                <option value="">Not started</option>
-                                {stepsForProcess.map((step) => (
-                                  <option key={step.id} value={step.id}>
-                                    {step.order_index}. {step.title}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
+                          <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1.3fr)]">
                             <div className="space-y-1">
                               <p className="text-[10px] text-slate-400">Progress</p>
                               <p className="text-[10px] text-slate-300">
@@ -2310,7 +2366,33 @@ function App() {
                                   {currentStep.description}
                                 </p>
                               )}
-                              <div className="mt-1 flex flex-wrap gap-1">
+                              {currentStep && (
+                                <p className="text-[9px] text-slate-500">
+                                  {lastStepActivity
+                                    ? `Last update ${
+                                        lastStepActivity.created_by &&
+                                        lastStepActivity.created_by === user?.id
+                                          ? 'by you'
+                                          : 'by team member'
+                                      } at ${new Date(
+                                        lastStepActivity.created_at,
+                                      ).toLocaleString()}`
+                                    : 'No updates yet for this step.'}
+                                </p>
+                              )}
+                              {remainingDuration > 0 && (
+                                <>
+                                  <p className="text-[10px] text-slate-400">
+                                    Estimated remaining duration: {remainingDurationDisplay} days
+                                  </p>
+                                  {estimatedFinishDate && (
+                                    <p className="text-[10px] text-slate-400">
+                                      Estimated finish date: {estimatedFinishDate}
+                                    </p>
+                                  )}
+                                </>
+                              )}
+                              <div className="mt-1 flex flex-wrap gap-2">
                                 <button
                                   type="button"
                                   disabled={stepsForProcess.length === 0 || !currentStep || !user}
@@ -2323,9 +2405,9 @@ function App() {
                                     const previous = stepsForProcess[index - 1]
                                     void handleChangeProjectStep(project.id, previous.id)
                                   }}
-                                  className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold disabled:cursor-not-allowed disabled:opacity-50"
+                                  className="flex-1 inline-flex items-center justify-center rounded-full border border-red-500/60 bg-red-500/15 px-3 py-1 text-[10px] font-semibold text-red-200 hover:border-red-400 hover:bg-red-500/25 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
-                                  Previous
+                                  &lt;- Go Back
                                 </button>
                                 <button
                                   type="button"
@@ -2345,100 +2427,252 @@ function App() {
                                     const next = stepsForProcess[index + 1]
                                     void handleChangeProjectStep(project.id, next.id)
                                   }}
-                                  className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-300 hover:border-emerald-400 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                                  className="flex-1 inline-flex items-center justify-center rounded-full border border-emerald-500/60 bg-emerald-500/15 px-3 py-1 text-[10px] font-semibold text-emerald-300 hover:border-emerald-400 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
-                                  Done
+                                  Done -&gt;
                                 </button>
                               </div>
-                              <div className="mt-2 space-y-1 rounded-lg border border-white/10 bg-black/30 p-2">
-                                <p className="text-[10px] font-semibold text-slate-300">
-                                  Step comments
+                            </div>
+                            <div className="space-y-1 rounded-lg border border-white/10 bg-black/30 p-2">
+                              <p className="text-[10px] font-semibold text-slate-300">Step comments</p>
+                              {!currentStep ? (
+                                <p className="text-[10px] text-slate-500">
+                                  Start the project to comment on steps.
                                 </p>
-                                {!currentStep ? (
-                                  <p className="text-[10px] text-slate-500">
-                                    Start the project to comment on steps.
-                                  </p>
-                                ) : stepComments.length === 0 ? (
-                                  <p className="text-[10px] text-slate-500">
-                                    No comments yet for this step.
-                                  </p>
-                                ) : (
-                                  <div className="space-y-1 max-h-24 overflow-y-auto">
-                                    {stepComments.map((comment) => (
-                                      <div
-                                        key={comment.id}
-                                        className="rounded border border-white/10 bg-black/40 px-2 py-1"
-                                      >
-                                        <p className="text-[10px] text-slate-200 whitespace-pre-wrap">
-                                          {comment.body}
-                                        </p>
-                                        <p className="mt-0.5 text-[9px] text-slate-500">
+                              ) : stepComments.length === 0 ? (
+                                <p className="text-[10px] text-slate-500">
+                                  No comments yet for this step.
+                                </p>
+                              ) : (
+                                <div className="space-y-1 max-h-24 overflow-y-auto">
+                                  {stepComments.map((comment) => (
+                                    <div
+                                      key={comment.id}
+                                      className="rounded border border-white/10 bg-black/40 px-2 py-1"
+                                    >
+                                      <p className="text-[10px] text-slate-200 whitespace-pre-wrap">
+                                        {comment.body}
+                                      </p>
+                                      <div className="mt-0.5 flex items-center justify-between gap-2">
+                                        <p className="text-[9px] text-slate-500">
                                           {new Date(comment.created_at).toLocaleString()}
                                         </p>
+                                        {isAdmin && (
+                                          <button
+                                            type="button"
+                                            onClick={() => void handleDeleteProjectStepComment(comment.id)}
+                                            disabled={deletingProjectCommentId === comment.id}
+                                            className="rounded-full border border-red-500/40 bg-red-500/10 px-2 py-0.5 text-[9px] text-red-200 hover:border-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                          >
+                                            {deletingProjectCommentId === comment.id ? 'Deleting…' : 'Delete'}
+                                          </button>
+                                        )}
                                       </div>
-                                    ))}
-                                  </div>
-                                )}
-                                {projectCommentsError && (
-                                  <p className="text-[10px] text-red-400">
-                                    {projectCommentsError}
-                                  </p>
-                                )}
-                                {currentStep && (
-                                  <form
-                                    className="space-y-1"
-                                    onSubmit={(event) =>
-                                      void handleSubmitProjectStepComment(
-                                        event,
-                                        project.id,
-                                        currentStep.id,
-                                      )
-                                    }
-                                  >
-                                    <textarea
-                                      className="h-12 w-full resize-none rounded border border-white/10 bg-black/40 px-2 py-1 text-[10px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                                      value={commentDraft}
-                                      onChange={(event) => {
-                                        if (!commentKey) return
-                                        const value = event.target.value
-                                        setNewProjectComments((prev) => ({
-                                          ...prev,
-                                          [commentKey]: value,
-                                        }))
-                                      }}
-                                      disabled={!user || (commentKey !== null && isSubmittingProjectCommentKey === commentKey)}
-                                      placeholder={
-                                        user
-                                          ? 'Add a note or clarification for this project step...'
-                                          : 'Sign in to comment on this project step.'
-                                      }
-                                    />
-                                    <div className="flex justify-end">
-                                      <button
-                                        type="submit"
-                                        disabled=
-                                          {!user ||
-                                            !commentKey ||
-                                            isSubmittingProjectCommentKey === commentKey}
-                                        className="rounded-full bg-nest-gold px-2.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
-                                      >
-                                        {commentKey && isSubmittingProjectCommentKey === commentKey
-                                          ? 'Posting...'
-                                          : 'Post'}
-                                      </button>
                                     </div>
-                                  </form>
-                                )}
-                              </div>
+                                  ))}
+                                </div>
+                              )}
+                              {projectCommentsError && (
+                                <p className="text-[10px] text-red-400">{projectCommentsError}</p>
+                              )}
+                              {currentStep && (
+                                <form
+                                  className="space-y-1"
+                                  onSubmit={(event) =>
+                                    void handleSubmitProjectStepComment(
+                                      event,
+                                      project.id,
+                                      currentStep.id,
+                                    )
+                                  }
+                                >
+                                  <textarea
+                                    className="h-12 w-full resize-none rounded border border-white/10 bg-black/40 px-2 py-1 text-[10px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                                    value={commentDraft}
+                                    onChange={(event) => {
+                                      if (!commentKey) return
+                                      const value = event.target.value
+                                      setNewProjectComments((prev) => ({
+                                        ...prev,
+                                        [commentKey]: value,
+                                      }))
+                                    }}
+                                    disabled={!user || (commentKey !== null && isSubmittingProjectCommentKey === commentKey)}
+                                    placeholder={
+                                      user
+                                        ? 'Add a note or clarification for this project step...'
+                                        : 'Sign in to comment on this project step.'
+                                    }
+                                  />
+                                  <div className="flex justify-end">
+                                    <button
+                                      type="submit"
+                                      disabled=
+                                        {!user ||
+                                          !commentKey ||
+                                          isSubmittingProjectCommentKey === commentKey}
+                                      className="rounded-full bg-nest-gold px-2.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      {commentKey && isSubmittingProjectCommentKey === commentKey
+                                        ? 'Posting...'
+                                        : 'Post'}
+                                    </button>
+                                  </div>
+                                </form>
+                              )}
                             </div>
                           </div>
+                          {expandedProjectHistoryId === project.id &&
+                            previousStepActivities.length > 0 && (
+                              <div className="mt-2 rounded-lg border border-white/10 bg-black/30 p-2 text-[10px] text-slate-200">
+                                <p className="mb-1 text-[10px] font-semibold text-slate-300">
+                                  Previous steps activity
+                                </p>
+                                <ul className="space-y-1 max-h-32 overflow-y-auto">
+                                  {previousStepActivities.map(({ step, activity }) => (
+                                    <li key={step.id} className="flex flex-col">
+                                      <span className="text-[10px] text-slate-200">
+                                        {step.order_index}. {step.title}
+                                      </span>
+                                      <span className="text-[9px] text-slate-500">
+                                        {activity.created_by && activity.created_by === user?.id
+                                          ? 'By you'
+                                          : 'By team member'}{' '}
+                                        at {new Date(activity.created_at).toLocaleString()}
+                                      </span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
                         </div>
                       )
                     })}
                   </div>
                 )}
               </div>
+              <aside className="mt-2 w-full max-w-xs rounded-2xl border border-white/10 bg-black/30 p-3 text-[10px] text-slate-100 md:mt-0 md:ml-4">
+                <form className="space-y-2" onSubmit={handleCreateProject}>
+                  <div>
+                    <p className="text-[10px] font-semibold text-slate-300">New project</p>
+                    <p className="text-[10px] text-slate-500">
+                      {user
+                        ? 'Pick a process template and give the project a clear name (e.g. Renovation – Penthouse A).'
+                        : 'Sign in to create projects from process templates.'}
+                    </p>
+                  </div>
+                  <input
+                    className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1 text-[10px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                    placeholder="Project name"
+                    value={newProjectName}
+                    onChange={(event) => setNewProjectName(event.target.value)}
+                    disabled={!user}
+                  />
+                  <select
+                    className="w-full rounded-xl border border-white/10 bg-black/40 px-2.5 py-1 text-[10px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                    value={newProjectProcessId}
+                    onChange={(event) => setNewProjectProcessId(event.target.value)}
+                    disabled={!user}
+                  >
+                    <option value="">Select process template</option>
+                    {processes.map((process) => (
+                      <option key={process.id} value={process.id}>
+                        {process.name}
+                      </option>
+                    ))}
+                  </select>
+                  {projectFormError && (
+                    <p className="text-[10px] text-red-400">{projectFormError}</p>
+                  )}
+                  <button
+                    type="submit"
+                    disabled={isCreatingProject || !user}
+                    className="w-full rounded-full bg-nest-gold px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isCreatingProject ? 'Creating...' : 'Create project'}
+                  </button>
+                </form>
+              </aside>
             </div>
+          </section>
+        </main>
+      ) : activePage === 'settings' ? (
+        <main className="mx-auto flex w-full max-w-xl flex-1 flex-col gap-4 px-6 pb-6 pt-4">
+          <section className="flex-1 rounded-2xl border border-white/5 bg-nest-surface/80 p-4 text-[11px] text-slate-100 shadow-soft-elevated">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  Settings  b7 Profile
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  Set your display name and choose one of the company roles.
+                </p>
+              </div>
+            </div>
+            {!user ? (
+              <p className="text-[11px] text-slate-500">Sign in to edit your profile.</p>
+            ) : (
+              <form className="space-y-3 max-w-sm" onSubmit={handleSaveProfile}>
+                <div className="space-y-1">
+                  <p className="text-[10px] font-semibold text-slate-300">Account</p>
+                  <p className="text-[10px] text-slate-500">
+                    Registered email:{' '}
+                    <span className="font-medium text-slate-200">{user.email}</span>
+                  </p>
+                </div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-slate-500">First name</p>
+                    <input
+                      className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                      value={profileFirstName}
+                      onChange={(event) => setProfileFirstName(event.target.value)}
+                      placeholder="First name"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-slate-500">Last name</p>
+                    <input
+                      className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                      value={profileLastName}
+                      onChange={(event) => setProfileLastName(event.target.value)}
+                      placeholder="Last name"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[10px] text-slate-500">Company role</p>
+                  <select
+                    className="w-full rounded-full border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                    value={profileRole}
+                    onChange={(event) => setProfileRole(event.target.value)}
+                  >
+                    <option value="">Select your role</option>
+                    {customRoles.map((role) => (
+                      <option key={role} value={role}>
+                        {role}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-slate-500">
+                    You must choose one of the roles defined by the admin.
+                  </p>
+                </div>
+                {profileError && (
+                  <p className="text-[10px] text-red-400">{profileError}</p>
+                )}
+                {profileSuccess && (
+                  <p className="text-[10px] text-emerald-400">{profileSuccess}</p>
+                )}
+                <button
+                  type="submit"
+                  disabled={isSavingProfile}
+                  className="rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isSavingProfile ? 'Saving...' : 'Save profile'}
+                </button>
+              </form>
+            )}
           </section>
         </main>
       ) : (
@@ -2567,14 +2801,6 @@ function App() {
                   These roles are available when assigning responsibilities and lanes to steps.
                 </p>
                 <div className="mb-1 flex flex-wrap gap-1">
-                  {ROLE_OPTIONS.map((role) => (
-                    <span
-                      key={role}
-                      className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-slate-200"
-                    >
-                      {role}
-                    </span>
-                  ))}
                   {customRoles.map((role) => (
                     <button
                       key={role}
@@ -2613,12 +2839,19 @@ function App() {
       <div id="print-workflow">
         <div className="print-container">
           <header className="print-header">
-            <h1 className="print-title">{selectedProcess?.name ?? 'Workflow'}</h1>
-            {selectedProcess?.description && (
-              <p className="print-subtitle">{selectedProcess.description}</p>
-            )}
+            <div className="print-header-main">
+              <div className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-nest-gold/60 bg-gradient-to-br from-nest-green-dark to-black text-[10px] font-semibold tracking-[0.18em] text-nest-gold">
+                NL
+              </div>
+              <div className="ml-2">
+                <h1 className="print-title">Nestland Workflow Export</h1>
+                {selectedProcess?.name && (
+                  <p className="print-subtitle">Process: {selectedProcess.name}</p>
+                )}
+              </div>
+            </div>
             <p className="print-meta">
-              Exported on: {exportedAt ?? new Date().toLocaleString()}
+              Exported on {exportedAt ?? new Date().toLocaleString()} by {user?.email ?? 'Unknown user'}
             </p>
           </header>
           <section className="print-section">
@@ -2629,7 +2862,7 @@ function App() {
                   <th>#</th>
                   <th>Step</th>
                   <th>Responsibility</th>
-                  <th>Lane</th>
+                  <th>Time (days)</th>
                   <th>Details</th>
                 </tr>
               </thead>
@@ -2642,7 +2875,11 @@ function App() {
                       <td>{step.order_index}</td>
                       <td>{step.title}</td>
                       <td>{step.role ?? 'Unassigned'}</td>
-                      <td>{step.lane ?? '—'}</td>
+                      <td>
+                        {step.duration_days !== null && step.duration_days !== undefined
+                          ? step.duration_days
+                          : ''}
+                      </td>
                       <td>{step.description ?? ''}</td>
                     </tr>
                   ))}
@@ -2713,9 +2950,6 @@ function App() {
                     <span className="h-1.5 w-1.5 rounded-full bg-current/70" />
                     {selectedStep.role ?? 'Unassigned'}
                   </span>
-                  {selectedStep.lane && (
-                    <span className="text-slate-500">Lane: {selectedStep.lane}</span>
-                  )}
                 </div>
                 <p className="mt-1 text-[10px] text-slate-400">
                   Order index: <span className="text-slate-200">{selectedStep.order_index}</span>
