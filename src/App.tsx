@@ -84,27 +84,27 @@ const ROLE_COLORS: Record<string, { border: string; background: string; badge: s
   Client: {
     border: '#38bdf8',
     background: 'rgba(15,23,42,0.9)',
-    badge: 'border-sky-500/50 bg-sky-500/10 text-sky-200',
+    badge: 'border-sky-500 bg-sky-100 text-sky-900',
   },
   MD: {
     border: '#facc15',
     background: 'rgba(51, 37, 0, 0.9)',
-    badge: 'border-yellow-400/50 bg-yellow-400/10 text-yellow-200',
+    badge: 'border-yellow-500 bg-yellow-100 text-yellow-900',
   },
   OPS: {
     border: '#22c55e',
     background: 'rgba(6, 78, 59, 0.9)',
-    badge: 'border-emerald-400/50 bg-emerald-400/10 text-emerald-200',
+    badge: 'border-emerald-500 bg-emerald-100 text-emerald-900',
   },
   PM: {
     border: '#a855f7',
     background: 'rgba(46,16,101,0.9)',
-    badge: 'border-purple-400/50 bg-purple-400/10 text-purple-200',
+    badge: 'border-purple-500 bg-purple-100 text-purple-900',
   },
   'PM & OPS': {
     border: '#f97316',
     background: 'rgba(30,64,175,0.9)',
-    badge: 'border-orange-400/50 bg-orange-400/10 text-orange-200',
+    badge: 'border-orange-500 bg-orange-100 text-orange-900',
   },
 }
 
@@ -122,7 +122,7 @@ function getRoleBadgeClasses(role: string | null): string {
   const key = role?.trim() || 'Unassigned'
   const config = ROLE_COLORS[key]
   if (config) return config.badge
-  return 'border-slate-500/40 bg-slate-500/10 text-slate-200'
+  return 'border-slate-400 bg-slate-100 text-slate-800'
 }
 
 function App() {
@@ -143,7 +143,6 @@ function App() {
   const [isLoadingFlow, setIsLoadingFlow] = useState(false)
   const [processError, setProcessError] = useState<string | null>(null)
   const [flowError, setFlowError] = useState<string | null>(null)
-  const [refreshCounter, setRefreshCounter] = useState(0)
 
   const [newProcessSlug, setNewProcessSlug] = useState('')
   const [newProcessName, setNewProcessName] = useState('')
@@ -163,9 +162,11 @@ function App() {
   const [isCreatingStep, setIsCreatingStep] = useState(false)
   const [stepFormError, setStepFormError] = useState<string | null>(null)
   const [newStepDescription, setNewStepDescription] = useState('')
-  const [newStepDuration, setNewStepDuration] = useState('')
+  const [newStepDurationDays, setNewStepDurationDays] = useState('')
+  const [newStepDurationHours, setNewStepDurationHours] = useState('')
 
   const [transitionFormError, setTransitionFormError] = useState<string | null>(null)
+  const [isDeletingAllConnections, setIsDeletingAllConnections] = useState(false)
 
   const [comments, setComments] = useState<Comment[]>([])
   const [newComment, setNewComment] = useState('')
@@ -208,6 +209,7 @@ function App() {
   const [isUpdatingProjectNameId, setIsUpdatingProjectNameId] = useState<string | null>(null)
   const [deletingProjectCommentId, setDeletingProjectCommentId] = useState<string | null>(null)
   const [expandedProjectHistoryId, setExpandedProjectHistoryId] = useState<string | null>(null)
+  const [isDeletingProjectId, setIsDeletingProjectId] = useState<string | null>(null)
 
   const [profileFirstName, setProfileFirstName] = useState('')
   const [profileLastName, setProfileLastName] = useState('')
@@ -221,10 +223,18 @@ function App() {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
   const [viewMode, setViewMode] = useState<'workflow' | 'responsibilities'>('workflow')
+  const [isCommentsSidebarVisible, setIsCommentsSidebarVisible] = useState(true)
   const [exportedAt, setExportedAt] = useState<string | null>(null)
+
+  const [isWhiteMode, setIsWhiteMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    const stored = window.localStorage.getItem('nestland_theme')
+    return stored === 'light'
+  })
 
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null)
   const hasInitialFitRef = useRef(false)
+  const lastSelectedProcessIdRef = useRef<string | null>(null)
 
   const [wikiUrl, setWikiUrl] = useState(() => {
     if (typeof window === 'undefined') return ''
@@ -275,6 +285,21 @@ function App() {
     if (typeof window === 'undefined') return
     window.localStorage.setItem('nestland_custom_roles', JSON.stringify(customRoles))
   }, [customRoles])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const root = document.documentElement
+    const body = document.body
+    if (isWhiteMode) {
+      root.classList.add('theme-light')
+      body.classList.add('theme-light')
+      window.localStorage.setItem('nestland_theme', 'light')
+    } else {
+      root.classList.remove('theme-light')
+      body.classList.remove('theme-light')
+      window.localStorage.setItem('nestland_theme', 'dark')
+    }
+  }, [isWhiteMode])
 
   useEffect(() => {
     const client = supabase
@@ -512,7 +537,7 @@ function App() {
     return () => {
       isCancelled = true
     }
-  }, [selectedProcessId, refreshCounter])
+  }, [selectedProcessId])
 
   useEffect(() => {
     if (activePage !== 'settings') return
@@ -569,12 +594,27 @@ function App() {
     if (!reactFlowInstance) return
     if (!selectedProcessId) return
     if (steps.length === 0) return
+
+    // If the selected process changed, allow a fresh auto-fit for this process.
+    if (lastSelectedProcessIdRef.current !== selectedProcessId) {
+      hasInitialFitRef.current = false
+      lastSelectedProcessIdRef.current = selectedProcessId
+    }
+
     if (hasInitialFitRef.current) return
 
+    // Auto-fit and slightly zoom in the workflow for the first view of this process.
     reactFlowInstance.fitView({ padding: 0.2 })
     const currentZoom = reactFlowInstance.getZoom()
     const targetZoom = Math.min(currentZoom * 1.2, 2)
     reactFlowInstance.zoomTo(targetZoom)
+
+    // Select the first step (by order_index) when opening the process.
+    const sorted = steps.slice().sort((a, b) => a.order_index - b.order_index)
+    const firstStep = sorted[0]
+    if (firstStep) {
+      setSelectedStepId(firstStep.id)
+    }
 
     hasInitialFitRef.current = true
   }, [reactFlowInstance, selectedProcessId, steps])
@@ -893,6 +933,38 @@ function App() {
     setDeletingProjectCommentId(null)
   }
 
+  const handleDeleteProject = async (projectId: string) => {
+    if (!supabase) return
+    if (!isAdmin) return
+
+    const confirmed = window.confirm(
+      'Are you sure you want to delete this project? This cannot be undone.',
+    )
+    if (!confirmed) return
+
+    setIsDeletingProjectId(projectId)
+    setProjectsError(null)
+
+    const { error } = await supabase
+      .from('projects')
+      .delete()
+      .eq('id', projectId)
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to delete project', error)
+      setProjectsError('Failed to delete project')
+    } else {
+      setProjects((prev) => prev.filter((project) => project.id !== projectId))
+      setProjectComments((prev) => prev.filter((comment) => comment.project_id !== projectId))
+      if (expandedProjectHistoryId === projectId) {
+        setExpandedProjectHistoryId(null)
+      }
+    }
+
+    setIsDeletingProjectId(null)
+  }
+
   const handleStartEditProjectName = (project: Project) => {
     if (!isAdmin) return
     setEditingProjectId(project.id)
@@ -961,6 +1033,23 @@ function App() {
     setResolvingCommentId(null)
   }
 
+  const handleDeleteComment = async (id: string) => {
+    if (!supabase) return
+    if (!isAdmin) return
+
+    const { error } = await supabase.from('comments').delete().eq('id', id)
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to delete comment', error)
+      setCommentError('Failed to delete comment')
+      return
+    }
+
+    setComments((prev) => prev.filter((comment) => comment.id !== id))
+    setCommentError(null)
+  }
+
   const handlePasswordLogin = async (event: FormEvent) => {
     event.preventDefault()
     if (!supabase) return
@@ -999,7 +1088,11 @@ function App() {
   const handleSelectProcess = (slug: string, id: string) => {
     setSelectedProcessSlug(slug)
     setSelectedProcessId(id)
-    setRefreshCounter((value) => value + 1)
+
+    // Whenever a new workflow is selected, allow the canvas to auto-fit and
+    // restart from the first step for that process.
+    hasInitialFitRef.current = false
+    lastSelectedProcessIdRef.current = id
 
     if (isAdmin) {
       const process = processes.find((p) => p.id === id)
@@ -1021,17 +1114,19 @@ function App() {
         setNewStepRole(step.role ?? '')
         setNewStepOrder(String(step.order_index))
         setNewStepDescription(step.description ?? '')
-        setNewStepDuration(
-          step.duration_days !== null && step.duration_days !== undefined
-            ? String(step.duration_days)
-            : '',
-        )
+        if (step.duration_days !== null && step.duration_days !== undefined) {
+          const total = step.duration_days
+          const wholeDays = Math.trunc(total)
+          const rawHours = Math.round((total - wholeDays) * 24)
+          const hours = Math.min(23, rawHours)
+          setNewStepDurationDays(wholeDays ? String(wholeDays) : '')
+          setNewStepDurationHours(hours ? String(hours) : '')
+        } else {
+          setNewStepDurationDays('')
+          setNewStepDurationHours('')
+        }
       }
     }
-  }
-
-  const handleRefreshFlow = () => {
-    setRefreshCounter((value) => value + 1)
   }
 
   const handleAddRole = (event: FormEvent) => {
@@ -1189,36 +1284,153 @@ function App() {
     }
 
     const orderIndex = Number(newStepOrder) || 0
-    const durationDaysValue = newStepDuration.trim()
-    const durationDays = durationDaysValue === '' ? null : Number(durationDaysValue) || null
+
+    const daysStr = newStepDurationDays.trim()
+    const hoursStr = newStepDurationHours.trim()
+    let daysNum = 0
+    let hoursNum = 0
+    let hasAnyDuration = false
+
+    if (daysStr !== '') {
+      const parsed = Number(daysStr)
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        setStepFormError('Days must be a non-negative number.')
+        return
+      }
+      daysNum = parsed
+      hasAnyDuration = true
+    }
+
+    if (hoursStr !== '') {
+      const parsed = Number(hoursStr)
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed >= 24) {
+        setStepFormError('Hours must be between 0 and 23.')
+        return
+      }
+      hoursNum = parsed
+      hasAnyDuration = true
+    }
+
+    const durationDays = hasAnyDuration ? daysNum + hoursNum / 24 : null
 
     setIsCreatingStep(true)
     setStepFormError(null)
-    const { data, error } = await supabase
-      .from('process_steps')
-      .insert({
-        process_id: selectedProcessId,
-        title,
-        role: newStepRole.trim() || null,
-        order_index: orderIndex,
-        description: newStepDescription.trim() || null,
-        duration_days: durationDays,
-      })
-      .select('id, process_id, title, description, role, order_index, duration_days')
-      .single()
+    const expectedStepCount = steps.filter((step) => step.process_id === selectedProcessId).length
 
-    if (error) {
+    let createdStep: ProcessStep | null = null
+
+    // First, try to perform an atomic insert using a transactional RPC.
+    try {
+      const { data: rpcResult, error: rpcError } = await supabase.rpc(
+        'insert_process_step_with_shift',
+        {
+          process_id: selectedProcessId,
+          title,
+          role: newStepRole.trim() || null,
+          order_index: orderIndex,
+          description: newStepDescription.trim() || null,
+          duration_days: durationDays,
+          expected_step_count: expectedStepCount,
+        },
+      )
+
+      if (rpcError) {
+        // If the RPC reports a concurrency conflict, surface that explicitly.
+        const message = rpcError.message ?? ''
+        const code = (rpcError as { code?: string }).code
+
+        if (code === 'P0004' || message.toLowerCase().includes('concurrent')) {
+          setStepFormError(
+            'The workflow changed while you were editing. Please reload and try again.',
+          )
+          setIsCreatingStep(false)
+          return
+        }
+
+        // eslint-disable-next-line no-console
+        console.error('insert_process_step_with_shift RPC failed, falling back', rpcError)
+      } else if (rpcResult) {
+        createdStep = Array.isArray(rpcResult)
+          ? (rpcResult[0] as ProcessStep)
+          : (rpcResult as ProcessStep)
+      }
+    } catch (rpcUnexpectedError) {
       // eslint-disable-next-line no-console
-      console.error('Failed to create step', error)
-      setStepFormError('Failed to create step')
-    } else if (data) {
-      setSteps((prev) => [...prev, data].sort((a, b) => a.order_index - b.order_index))
+      console.error('Unexpected RPC error during step creation, falling back', rpcUnexpectedError)
+    }
+
+    // Fallback path: preserve the existing non-transactional behaviour if RPC is unavailable.
+    if (!createdStep) {
+      // Shift existing steps at or after the desired order index down by 1
+      const { data: stepsToShift, error: shiftQueryError } = await supabase
+        .from('process_steps')
+        .select('id, order_index, process_id')
+        .eq('process_id', selectedProcessId)
+        .gte('order_index', orderIndex)
+        .order('order_index', { ascending: false })
+
+      if (shiftQueryError) {
+        setStepFormError('Failed to prepare step insertion.')
+        setIsCreatingStep(false)
+        return
+      }
+
+      if (stepsToShift && stepsToShift.length > 0) {
+        for (const step of stepsToShift) {
+          const { error: shiftError } = await supabase
+            .from('process_steps')
+            .update({ order_index: (step.order_index || 0) + 1 })
+            .eq('id', step.id)
+
+          if (shiftError) {
+            setStepFormError('Failed to shift existing steps when inserting.')
+            setIsCreatingStep(false)
+            return
+          }
+        }
+      }
+
+      const { data, error } = await supabase
+        .from('process_steps')
+        .insert({
+          process_id: selectedProcessId,
+          title,
+          role: newStepRole.trim() || null,
+          order_index: orderIndex,
+          description: newStepDescription.trim() || null,
+          duration_days: durationDays,
+        })
+        .select('id, process_id, title, description, role, order_index, duration_days')
+        .single()
+
+      if (error) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to create step', error)
+        setStepFormError('Failed to create step')
+        setIsCreatingStep(false)
+        return
+      }
+
+      createdStep = data as ProcessStep
+    }
+
+    if (createdStep) {
+      setSteps((prev) => {
+        const shifted = prev.map((step) => {
+          if (step.process_id !== selectedProcessId) return step
+          if ((step.order_index || 0) < orderIndex) return step
+          return { ...step, order_index: (step.order_index || 0) + 1 }
+        })
+        return [...shifted, createdStep!].sort((a, b) => a.order_index - b.order_index)
+      })
       setNewStepTitle('')
       setNewStepRole('')
       setNewStepOrder('0')
       setNewStepDescription('')
-      setNewStepDuration('')
+      setNewStepDurationDays('')
+      setNewStepDurationHours('')
     }
+
     setIsCreatingStep(false)
   }
 
@@ -1237,8 +1449,34 @@ function App() {
     }
 
     const orderIndex = Number(newStepOrder) || 0
-    const durationDaysValue = newStepDuration.trim()
-    const durationDays = durationDaysValue === '' ? null : Number(durationDaysValue) || null
+
+    const daysStr = newStepDurationDays.trim()
+    const hoursStr = newStepDurationHours.trim()
+    let daysNum = 0
+    let hoursNum = 0
+    let hasAnyDuration = false
+
+    if (daysStr !== '') {
+      const parsed = Number(daysStr)
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        setStepFormError('Days must be a non-negative number.')
+        return
+      }
+      daysNum = parsed
+      hasAnyDuration = true
+    }
+
+    if (hoursStr !== '') {
+      const parsed = Number(hoursStr)
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed >= 24) {
+        setStepFormError('Hours must be between 0 and 23.')
+        return
+      }
+      hoursNum = parsed
+      hasAnyDuration = true
+    }
+
+    const durationDays = hasAnyDuration ? daysNum + hoursNum / 24 : null
 
     setIsCreatingStep(true)
     setStepFormError(null)
@@ -1287,11 +1525,31 @@ function App() {
     if (error) {
       // eslint-disable-next-line no-console
       console.error('Failed to create transition from connect', error)
-      setTransitionFormError('Failed to create transition')
+      setTransitionFormError('Failed to create connection between steps')
     } else if (data) {
       setTransitions((prev) => [...prev, data])
       setTransitionFormError(null)
     }
+  }
+
+  const handleDeleteTransition = async (transitionId: string) => {
+    if (!supabase) return
+    if (!isAdmin) return
+
+    const { error } = await supabase
+      .from('process_transitions')
+      .delete()
+      .eq('id', transitionId)
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to delete connection', error)
+      setTransitionFormError('Failed to delete connection between steps')
+      return
+    }
+
+    setTransitions((prev) => prev.filter((transition) => transition.id !== transitionId))
+    setTransitionFormError(null)
   }
 
   const { nodes, edges } = useMemo(() => {
@@ -1373,10 +1631,14 @@ function App() {
       source: transition.from_step_id,
       target: transition.to_step_id,
       type: 'smoothstep',
+      style: {
+        stroke: isWhiteMode ? '#0f172a' : '#e5e7eb',
+        strokeWidth: 2,
+      },
     }))
 
     return { nodes: dynamicNodes, edges: dynamicEdges }
-  }, [steps, transitions, comments, selectedStepId])
+  }, [steps, transitions, comments, selectedStepId, isWhiteMode])
 
   const selectedStep = useMemo(
     () => steps.find((step) => step.id === selectedStepId) ?? null,
@@ -1409,7 +1671,7 @@ function App() {
   )
 
   const visibleComments = useMemo(() => {
-    if (!selectedStepId) return comments
+    if (!selectedStepId) return []
     return comments.filter((comment) => comment.step_id === selectedStepId)
   }, [comments, selectedStepId])
 
@@ -1434,25 +1696,41 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col text-sm text-slate-100">
-      <header className="border-b border-white/5 bg-gradient-to-r from-nest-bg/80 via-black/80 to-nest-green-dark/40 backdrop-blur">
+    <div
+      className={`min-h-screen flex flex-col text-sm ${
+        isWhiteMode ? 'bg-slate-50 text-slate-900' : 'text-slate-100'
+      }`}
+    >
+      <header className={`border-b backdrop-blur ${
+        isWhiteMode
+          ? 'border-slate-200 bg-gradient-to-r from-white via-slate-50 to-slate-100'
+          : 'border-white/5 bg-gradient-to-r from-nest-bg/80 via-black/80 to-nest-green-dark/40'
+      }`}>
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-full border border-nest-gold/60 bg-gradient-to-br from-nest-green-dark to-black shadow-soft-elevated">
+            <div className={`flex h-9 w-9 items-center justify-center rounded-full border shadow-soft-elevated ${
+              isWhiteMode
+                ? 'border-amber-600 bg-gradient-to-br from-amber-50 to-amber-100'
+                : 'border-nest-gold/60 bg-gradient-to-br from-nest-green-dark to-black'
+            }`}>
               <span className="text-xs font-semibold tracking-[0.15em] text-nest-gold">
                 NL
               </span>
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-sm font-semibold tracking-wide text-slate-50">
+                <h1 className={`text-sm font-semibold tracking-wide ${
+                  isWhiteMode ? 'text-slate-900' : 'text-slate-50'
+                }`}>
                   Nestland Command Center
                 </h1>
                 <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-300">
                   Internal
                 </span>
               </div>
-              <p className="mt-0.5 text-[11px] text-slate-400">
+              <p className={`mt-0.5 text-[11px] ${
+                isWhiteMode ? 'text-slate-600' : 'text-slate-400'
+              }`}>
                 Live process maps, anonymous collaboration, single source of truth.
               </p>
             </div>
@@ -1461,7 +1739,9 @@ function App() {
             <div className="flex items-center gap-2">
               {user ? (
                 <>
-                  <span className="hidden text-[10px] text-slate-400 sm:inline">
+                  <span className={`hidden text-[10px] sm:inline ${
+                    isWhiteMode ? 'text-slate-600' : 'text-slate-400'
+                  }`}>
                     Signed in as {user.email}
                   </span>
                   {isAdmin && (
@@ -1472,7 +1752,11 @@ function App() {
                   <button
                     type="button"
                     onClick={handleSignOut}
-                    className="rounded-full border border-white/10 bg-black/40 px-2.5 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+                    className={`rounded-full border px-2.5 py-0.5 text-[10px] hover:border-nest-gold/40 hover:text-nest-gold ${
+                      isWhiteMode
+                        ? 'border-slate-300 bg-white text-slate-700 shadow-sm'
+                        : 'border-white/10 bg-black/40 text-slate-300'
+                    }`}
                   >
                     Sign out
                   </button>
@@ -1480,14 +1764,22 @@ function App() {
               ) : (
                 <form className="flex items-center gap-1" onSubmit={handlePasswordLogin}>
                   <input
-                    className="w-32 rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 sm:w-40"
+                    className={`w-32 rounded-full border px-2 py-0.5 text-[10px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 sm:w-40 ${
+                      isWhiteMode
+                        ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                        : 'border-white/10 bg-black/40 text-slate-100'
+                    }`}
                     placeholder="Admin email"
                     value={loginEmail}
                     onChange={(event) => setLoginEmail(event.target.value)}
                     type="email"
                   />
                   <input
-                    className="w-24 rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 sm:w-28"
+                    className={`w-24 rounded-full border px-2 py-0.5 text-[10px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 sm:w-28 ${
+                      isWhiteMode
+                        ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                        : 'border-white/10 bg-black/40 text-slate-100'
+                    }`}
                     placeholder="Password"
                     type="password"
                     value={loginPassword}
@@ -1506,7 +1798,13 @@ function App() {
           </div>
           <div className="flex items-center gap-3 text-[11px] text-slate-400">
             <div className="hidden items-center gap-2 md:flex">
-              <span className="inline-flex items-center gap-1 rounded-full border border-nest-gold/25 bg-nest-surface/60 px-2.5 py-1 text-[10px] uppercase tracking-wide text-nest-gold">
+              <span
+                className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] uppercase tracking-wide ${
+                  isWhiteMode
+                    ? 'border-slate-300 bg-white text-black shadow-sm'
+                    : 'border-white/20 bg-black/60 text-slate-100'
+                }`}
+              >
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                 Beta
               </span>
@@ -1518,8 +1816,12 @@ function App() {
                 onClick={() => setActivePage('projects')}
                 className={`rounded-full border px-2.5 py-0.5 text-[10px] ${
                   activePage === 'projects'
-                    ? 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
-                    : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
+                    ? isWhiteMode
+                      ? 'border-black bg-black text-white'
+                      : 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
+                    : isWhiteMode
+                      ? 'border-slate-300 bg-white text-slate-700 shadow-sm hover:border-nest-gold/40 hover:text-nest-gold'
+                      : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
                 }`}
               >
                 Projects
@@ -1534,8 +1836,12 @@ function App() {
                 onClick={() => setActivePage('workflow')}
                 className={`rounded-full border px-2.5 py-0.5 text-[10px] ${
                   activePage === 'workflow'
-                    ? 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
-                    : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
+                    ? isWhiteMode
+                      ? 'border-black bg-black text-white'
+                      : 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
+                    : isWhiteMode
+                      ? 'border-slate-300 bg-white text-slate-700 shadow-sm hover:border-nest-gold/40 hover:text-nest-gold'
+                      : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
                 }`}
               >
                 Workflows
@@ -1545,8 +1851,12 @@ function App() {
                 onClick={() => setActivePage('wiki')}
                 className={`rounded-full border px-2.5 py-0.5 text-[10px] ${
                   activePage === 'wiki'
-                    ? 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
-                    : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
+                    ? isWhiteMode
+                      ? 'border-black bg-black text-white'
+                      : 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
+                    : isWhiteMode
+                      ? 'border-slate-300 bg-white text-slate-700 shadow-sm hover:border-nest-gold/40 hover:text-nest-gold'
+                      : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
                 }`}
               >
                 Wiki
@@ -1556,7 +1866,11 @@ function App() {
                   href={wikiUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="rounded-full border border-white/10 bg-black/40 px-2.5 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+                  className={`rounded-full border px-2.5 py-0.5 text-[10px] hover:border-nest-gold/40 hover:text-nest-gold ${
+                    isWhiteMode
+                      ? 'border-slate-300 bg-white text-slate-700 shadow-sm'
+                      : 'border-white/10 bg-black/40 text-slate-300'
+                  }`}
                 >
                   Drive
                 </a>
@@ -1567,8 +1881,12 @@ function App() {
                   onClick={() => setActivePage('settings')}
                   className={`rounded-full border px-2.5 py-0.5 text-[10px] ${
                     activePage === 'settings'
-                      ? 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
-                      : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
+                      ? isWhiteMode
+                        ? 'border-black bg-black text-white'
+                        : 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
+                      : isWhiteMode
+                        ? 'border-slate-300 bg-white text-slate-700 shadow-sm hover:border-nest-gold/40 hover:text-nest-gold'
+                        : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
                   }`}
                 >
                   Settings
@@ -1578,12 +1896,29 @@ function App() {
                 <button
                   type="button"
                   onClick={() => setIsSettingsOpen(true)}
-                  className="flex h-6 w-6 items-center justify-center rounded-full border border-white/10 bg-black/40 text-[11px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+                  className={`flex h-6 w-6 items-center justify-center rounded-full border text-[11px] hover:border-nest-gold/40 hover:text-nest-gold ${
+                    isWhiteMode
+                      ? 'border-slate-300 bg-white text-slate-700 shadow-sm'
+                      : 'border-white/10 bg-black/40 text-slate-300'
+                  }`}
                   aria-label="Admin settings"
                 >
                   ⚙
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => setIsWhiteMode((value) => !value)}
+                className={`hidden md:inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10px] hover:border-nest-gold/40 hover:text-nest-gold ${
+                  isWhiteMode
+                    ? 'border-slate-300 bg-white text-slate-700 shadow-sm'
+                    : 'border-white/10 bg-black/40 text-slate-300'
+                }`}
+                aria-label={isWhiteMode ? 'Switch to dark mode' : 'Switch to white mode'}
+                title={isWhiteMode ? 'Switch to dark mode' : 'Switch to white mode'}
+              >
+                <span aria-hidden="true">{isWhiteMode ? '☾' : '☀'}</span>
+              </button>
             </div>
           </div>
         </div>
@@ -1607,7 +1942,11 @@ function App() {
         <main className="mx-auto flex w-full max-w-7xl flex-1 gap-4 px-6 pb-6 pt-4">
           {/* Process list */}
           <aside
-            className={`hidden shrink-0 flex-col rounded-2xl border border-white/5 bg-nest-surface/80 shadow-soft-elevated md:flex ${
+            className={`hidden shrink-0 flex-col rounded-2xl border md:flex ${
+              isWhiteMode
+                ? 'border-slate-200 bg-white'
+                : 'border-white/5 bg-nest-surface/80'
+            } ${
               isSidebarCollapsed ? 'w-10 p-2 items-center' : 'w-72 p-3'
             }`}
           >
@@ -1616,13 +1955,19 @@ function App() {
               <button
                 type="button"
                 onClick={() => setIsSidebarCollapsed((value) => !value)}
-                className="flex h-6 w-6 items-center justify-center rounded-full border border-white/10 bg-black/40 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+                className={`flex h-6 w-6 items-center justify-center rounded-full border text-[10px] hover:border-nest-gold/40 hover:text-nest-gold ${
+                  isWhiteMode
+                    ? 'border-slate-300 bg-slate-50 text-slate-700'
+                    : 'border-white/10 bg-black/40 text-slate-300'
+                }`}
                 aria-label={isSidebarCollapsed ? 'Expand processes sidebar' : 'Collapse processes sidebar'}
               >
                 {isSidebarCollapsed ? '›' : '‹'}
               </button>
               {!isSidebarCollapsed && (
-                <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">
+                <span className={`text-[11px] font-medium uppercase tracking-[0.18em] ${
+                  isWhiteMode ? 'text-slate-700' : 'text-slate-400'
+                }`}>
                   Processes
                 </span>
               )}
@@ -1630,9 +1975,13 @@ function App() {
             {!isSidebarCollapsed && (
               <>
                 {isLoadingProcesses ? (
-                  <span className="text-[10px] text-slate-500">Loading...</span>
+                  <span className={`text-[10px] ${
+                    isWhiteMode ? 'text-slate-600' : 'text-slate-500'
+                  }`}>Loading...</span>
                 ) : (
-                  <span className="text-[10px] text-slate-500">{processes.length} total</span>
+                  <span className={`text-[10px] ${
+                    isWhiteMode ? 'text-slate-600' : 'text-slate-500'
+                  }`}>{processes.length} total</span>
                 )}
               </>
             )}
@@ -1644,7 +1993,9 @@ function App() {
               )}
               <div className="mt-1 space-y-1 overflow-y-auto text-[11px]">
                 {processes.length === 0 ? (
-                  <p className="text-[11px] text-slate-500">
+                  <p className={`text-[11px] ${
+                    isWhiteMode ? 'text-slate-600' : 'text-slate-500'
+                  }`}>
                     No processes yet.{' '}
                     {isAdmin
                       ? 'Use the admin panel below to create one.'
@@ -1666,14 +2017,20 @@ function App() {
                           onClick={() => handleSelectProcess(process.slug, process.id)}
                           className={`flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left text-[11px] ${
                             isActive
-                              ? 'border-nest-gold/40 bg-gradient-to-r from-nest-green-dark/70 via-black/80 to-nest-brown/40 text-slate-100 shadow-soft-elevated'
-                              : 'border-white/5 bg-white/5 text-slate-200 hover:border-nest-gold/30 hover:bg-white/10'
+                              ? isWhiteMode
+                                ? 'border-amber-500 bg-gradient-to-r from-amber-200 via-amber-100 to-amber-300 text-slate-900'
+                                : 'border-nest-gold/40 bg-gradient-to-r from-nest-green-dark/70 via-black/80 to-nest-brown/40 text-slate-100'
+                              : isWhiteMode
+                                ? 'border-slate-200 bg-slate-50 text-slate-700 hover:border-nest-gold/30 hover:bg-slate-100'
+                                : 'border-white/5 bg-white/5 text-slate-200 hover:border-nest-gold/30 hover:bg-white/10'
                           }`}
                         >
                           <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
                             <span className="truncate font-semibold">{process.name}</span>
                             {process.category && (
-                              <span className="truncate text-[10px] text-slate-500">
+                              <span className={`truncate text-[10px] ${
+                                isWhiteMode ? 'text-slate-600' : 'text-slate-500'
+                              }`}>
                                 Category: {process.category}
                               </span>
                             )}
@@ -1684,15 +2041,27 @@ function App() {
                 )}
               </div>
               {isAdmin && (
-                <div className="mt-3 border-t border-white/5 pt-3 text-[11px]">
-                  <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                <div className={`mt-3 border-t pt-3 text-[11px] ${
+                  isWhiteMode ? 'border-slate-200' : 'border-white/5'
+                }`}>
+                  <p className={`mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                    isWhiteMode ? 'text-slate-700' : 'text-slate-400'
+                  }`}>
                     Admin · Processes
                   </p>
                   {availableCategories.length > 0 && (
-                    <div className="mb-2 flex items-center gap-2 text-[10px] text-slate-400">
-                      <span className="uppercase tracking-[0.18em] text-slate-500">Filter</span>
+                    <div className={`mb-2 flex items-center gap-2 text-[10px] ${
+                      isWhiteMode ? 'text-slate-600' : 'text-slate-400'
+                    }`}>
+                      <span className={`uppercase tracking-[0.18em] ${
+                        isWhiteMode ? 'text-slate-600' : 'text-slate-500'
+                      }`}>Filter</span>
                       <select
-                        className="flex-1 rounded-full border border-white/10 bg-black/40 px-2 py-1 text-[10px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                        className={`flex-1 rounded-full border px-2 py-1 text-[10px] focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                          isWhiteMode
+                            ? 'border-slate-300 bg-white text-slate-900'
+                            : 'border-white/10 bg-black/40 text-slate-100'
+                        }`}
                         value={categoryFilter}
                         onChange={(event) =>
                           setCategoryFilter(
@@ -1711,13 +2080,21 @@ function App() {
                   )}
                   <form className="space-y-2" onSubmit={handleCreateProcess}>
                     <input
-                      className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                      className={`w-full rounded-xl border px-3 py-1.5 text-[11px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                        isWhiteMode
+                          ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                          : 'border-white/10 bg-black/40 text-slate-100'
+                      }`}
                       placeholder="Category (e.g. Renovation)"
                       value={newProcessSlug}
                       onChange={(event) => setNewProcessSlug(event.target.value)}
                     />
                     <input
-                      className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                      className={`w-full rounded-xl border px-3 py-1.5 text-[11px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                        isWhiteMode
+                          ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                          : 'border-white/10 bg-black/40 text-slate-100'
+                      }`}
                       placeholder="Process name"
                       value={newProcessName}
                       onChange={(event) => setNewProcessName(event.target.value)}
@@ -1728,7 +2105,7 @@ function App() {
                     <button
                       type="submit"
                       disabled={isCreatingProcess}
-                      className="w-full rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                      className="w-full rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {isCreatingProcess ? 'Creating...' : 'Create process'}
                     </button>
@@ -1737,25 +2114,45 @@ function App() {
                     )}
                   </form>
                   {selectedProcess && (
-                    <div className="mt-3 border-t border-white/5 pt-3 text-[11px]">
-                      <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    <div
+                      className={`mt-3 border-t pt-3 text-[11px] ${
+                        isWhiteMode ? 'border-slate-200' : 'border-white/5'
+                      }`}
+                    >
+                      <p
+                        className={`mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                          isWhiteMode ? 'text-slate-700' : 'text-slate-400'
+                        }`}
+                      >
                         Admin · Edit selected process
                       </p>
                       <form className="space-y-2" onSubmit={handleUpdateProcess}>
                         <input
-                          className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                          className={`w-full rounded-xl border px-3 py-1.5 text-[11px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                            isWhiteMode
+                              ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                              : 'border-white/10 bg-black/40 text-slate-100'
+                          }`}
                           placeholder="Category (e.g. Renovation)"
                           value={editProcessCategory}
                           onChange={(event) => setEditProcessCategory(event.target.value)}
                         />
                         <input
-                          className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                          className={`w-full rounded-xl border px-3 py-1.5 text-[11px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                            isWhiteMode
+                              ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                              : 'border-white/10 bg-black/40 text-slate-100'
+                          }`}
                           placeholder="Process name"
                           value={editProcessName}
                           onChange={(event) => setEditProcessName(event.target.value)}
                         />
                         <textarea
-                          className="h-16 w-full resize-none rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                          className={`h-16 w-full resize-none rounded-xl border px-3 py-1.5 text-[11px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                            isWhiteMode
+                              ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                              : 'border-white/10 bg-black/40 text-slate-100'
+                          }`}
                           placeholder="Process description"
                           value={editProcessDescription}
                           onChange={(event) => setEditProcessDescription(event.target.value)}
@@ -1766,14 +2163,22 @@ function App() {
                         <button
                           type="submit"
                           disabled={isUpdatingProcess}
-                          className="w-full rounded-full border border-nest-gold/40 bg-black/40 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-nest-gold shadow-soft-elevated hover:bg-nest-gold/10 disabled:cursor-not-allowed disabled:opacity-60"
+                          className={`w-full rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:cursor-not-allowed disabled:opacity-60 ${
+                            isWhiteMode
+                              ? 'border-amber-500 bg-amber-100 text-amber-900 hover:bg-amber-200'
+                              : 'border-nest-gold/40 bg-black/40 text-nest-gold hover:bg-nest-gold/10'
+                          }`}
                         >
                           {isUpdatingProcess ? 'Updating...' : 'Update process'}
                         </button>
                         <button
                           type="button"
                           onClick={() => void handleDeleteProcess(selectedProcess.id)}
-                          className="mt-1 w-full rounded-full border border-red-500/40 bg-red-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-red-200 shadow-soft-elevated hover:border-red-400 hover:bg-red-500/20"
+                          className={`mt-1 w-full rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-wide ${
+                            isWhiteMode
+                              ? 'border-red-500 bg-red-500 text-white hover:bg-red-600 hover:border-red-600'
+                              : 'border-red-500/40 bg-red-500/10 text-red-200 hover:border-red-400 hover:bg-red-500/20'
+                          }`}
                         >
                           Delete process
                         </button>
@@ -1787,14 +2192,47 @@ function App() {
         </aside>
 
         {/* Flowchart canvas */}
-        <section className="flex min-h-[480px] flex-1 flex-col overflow-hidden rounded-2xl border border-white/5 bg-nest-surface/80 shadow-soft-elevated">
-          <div className="flex items-center justify-between border-b border-white/5 px-4 py-2.5 text-[11px] text-slate-300">
+        <section
+          className={`flex min-h-[480px] flex-1 flex-col overflow-hidden rounded-2xl border ${
+            isWhiteMode ? 'border-slate-200 bg-white' : 'border-white/5 bg-nest-surface/80'
+          }`}
+        >
+          <div
+            className={`flex items-center justify-between border-b px-4 py-2.5 text-[11px] ${
+              isWhiteMode ? 'border-slate-200 bg-slate-50 text-slate-700' : 'border-white/5 text-slate-300'
+            }`}
+          >
             <div className="flex items-center gap-2">
-              <span className="rounded-full border border-nest-gold/40 bg-nest-gold/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-nest-gold">
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                  isWhiteMode
+                    ? 'border border-black bg-black text-white'
+                    : 'border border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
+                }`}
+              >
                 {selectedProcess?.name ?? 'Workflow'}
               </span>
               <span className="text-slate-500">
                 {isLoadingFlow ? 'Loading workflow...' : 'Workflow'}
+                {steps.length > 0 &&
+                  (() => {
+                    const totalDays = steps.reduce((sum, step) => {
+                      const value = step.duration_days ?? 0
+                      return sum + (Number.isFinite(value) ? value : 0)
+                    }, 0)
+                    const totalHours = Math.round(totalDays * 24)
+                    const days = Math.floor(totalHours / 24)
+                    const hours = totalHours % 24
+                    const parts: string[] = []
+                    if (days > 0) parts.push(`${days}d`)
+                    if (hours > 0) parts.push(`${hours}h`)
+                    const durationLabel = parts.length > 0 ? parts.join(' ') : '0d'
+                    return (
+                      <span className="ml-2 text-[10px] text-slate-500">
+                        · {steps.length} points · {durationLabel}
+                      </span>
+                    )
+                  })()}
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -1804,30 +2242,47 @@ function App() {
                 onClick={() => setViewMode(viewMode === 'workflow' ? 'responsibilities' : 'workflow')}
                 className={`rounded-full border px-2.5 py-0.5 text-[10px] ${
                   viewMode === 'workflow'
-                    ? 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
+                    ? isWhiteMode
+                      ? 'border-slate-300 bg-white text-slate-700 hover:border-nest-gold/40 hover:text-nest-gold'
+                      : 'border-white/10 bg-black/40 text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
                     : 'border-nest-gold/40 bg-nest-gold/10 text-nest-gold'
                 }`}
               >
                 {viewMode === 'workflow' ? 'Responsibilities' : 'Workflow map'}
               </button>
-              <button
-                type="button"
-                onClick={handleRefreshFlow}
-                className="rounded-full border border-white/10 bg-black/40 px-2.5 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
-              >
-                Refresh
-              </button>
+              {!isCommentsSidebarVisible && (
+                <button
+                  type="button"
+                  onClick={() => setIsCommentsSidebarVisible(true)}
+                  className={`rounded-full border px-2.5 py-0.5 text-[10px] hover:border-nest-gold/40 hover:text-nest-gold ${
+                    isWhiteMode
+                      ? 'border-slate-300 bg-white text-slate-700'
+                      : 'border-white/10 bg-black/40 text-slate-300'
+                  }`}
+                >
+                  Show comments
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setIsFullscreen(true)}
-                className="rounded-full border border-white/10 bg-black/40 px-2.5 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+                className={`rounded-full border px-2.5 py-0.5 text-[10px] hover:border-nest-gold/40 hover:text-nest-gold ${
+                  isWhiteMode
+                    ? 'border-slate-300 bg-white text-slate-700'
+                    : 'border-white/10 bg-black/40 text-slate-300'
+                }`}
               >
                 Fullscreen
               </button>
-              <span className="text-[10px] text-slate-500">Live from Supabase</span>
             </div>
           </div>
-          <div className="flex-1 bg-gradient-to-br from-black via-slate-900 to-black">
+          <div
+            className={`flex-1 bg-gradient-to-br ${
+              isWhiteMode
+                ? 'from-slate-100 via-slate-50 to-slate-100'
+                : 'from-black via-slate-900 to-black'
+            }`}
+          >
             {viewMode === 'workflow' ? (
               <ReactFlowProvider>
                 <ReactFlow
@@ -1844,19 +2299,41 @@ function App() {
                   nodesDraggable={false}
                   onConnect={handleConnect}
                   onNodeClick={(_, node) => handleSelectStep(node.id)}
+                  onEdgeClick={(_, edge) => {
+                    if (!isAdmin) return
+                    if (window.confirm('Delete this connection between steps?')) {
+                      void handleDeleteTransition(edge.id)
+                    }
+                  }}
                   onPaneClick={() => setSelectedStepId(null)}
                   onInit={(instance) => setReactFlowInstance(instance)}
                 >
-                  <Background color="#111827" gap={24} />
+                  <Background color={isWhiteMode ? '#e5e7eb' : '#111827'} gap={24} />
                   <Controls position="bottom-right" />
                 </ReactFlow>
               </ReactFlowProvider>
             ) : (
-              <div className="flex h-full flex-col px-4 py-3 text-[11px] text-slate-200">
+              <div
+                className={`flex h-full flex-col px-4 py-3 text-[11px] ${
+                  isWhiteMode ? 'text-slate-800' : 'text-slate-200'
+                }`}
+              >
                 {stepsByRole.length === 0 ? (
-                  <p className="text-[11px] text-slate-500">No steps defined yet.</p>
+                  <p
+                    className={`text-[11px] ${
+                      isWhiteMode ? 'text-slate-500' : 'text-slate-500'
+                    }`}
+                  >
+                    No steps defined yet.
+                  </p>
                 ) : (
-                  <div className="flex-1 overflow-y-auto rounded-2xl border border-white/10 bg-black/40 p-3">
+                  <div
+                    className={`flex-1 overflow-y-auto rounded-2xl border p-3 ${
+                      isWhiteMode
+                        ? 'border-slate-200 bg-slate-50'
+                        : 'border-white/10 bg-black/40'
+                    }`}
+                  >
                     <table className="min-w-full border-separate border-spacing-y-1 text-[10px]">
                       <thead>
                         <tr className="text-left text-slate-500">
@@ -1866,7 +2343,12 @@ function App() {
                       </thead>
                       <tbody>
                         {stepsByRole.map(([role, group]) => (
-                          <tr key={role} className="align-top text-slate-300">
+                          <tr
+                            key={role}
+                            className={`align-top ${
+                              isWhiteMode ? 'text-slate-900' : 'text-slate-300'
+                            }`}
+                          >
                             <td className="px-3 py-1">
                               <span
                                 className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] ${getRoleBadgeClasses(role)}`}
@@ -1885,7 +2367,11 @@ function App() {
                                       key={step.id}
                                       className="flex items-center justify-between gap-2"
                                     >
-                                      <span className="truncate text-[10px] text-slate-200">
+                                      <span
+                                        className={`truncate text-[10px] ${
+                                          isWhiteMode ? 'text-slate-900' : 'text-slate-200'
+                                        }`}
+                                      >
                                         {step.order_index}. {step.title}
                                       </span>
                                     </li>
@@ -1902,29 +2388,55 @@ function App() {
             )}
           </div>
           {isAdmin && (
-            <div className="border-t border-white/5 bg-black/40 px-4 py-3 text-[11px]">
+            <div
+              className={`border-t px-4 py-3 text-[11px] ${
+                isWhiteMode ? 'border-slate-200 bg-white text-slate-800' : 'border-white/5 bg-black/40'
+              }`}
+            >
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                <p
+                  className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                    isWhiteMode ? 'text-slate-700' : 'text-slate-400'
+                  }`}
+                >
                   Admin · Edit Flow
                 </p>
-                <p className="text-[10px] text-slate-500">
+                <p
+                  className={`text-[10px] ${
+                    isWhiteMode ? 'text-slate-600' : 'text-slate-500'
+                  }`}
+                >
                   Process:{' '}
                   {processes.find((p) => p.id === selectedProcessId)?.slug ?? 'none selected'}
                 </p>
               </div>
               <div className="space-y-3">
                 <form className="space-y-2" onSubmit={handleCreateStep}>
-                  <p className="text-[10px] font-semibold text-slate-300">Add step</p>
+                  <p
+                    className={`text-[10px] font-semibold ${
+                      isWhiteMode ? 'text-slate-800' : 'text-slate-300'
+                    }`}
+                  >
+                    Add step
+                  </p>
                   <div className="grid gap-2 md:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
                     <div className="space-y-2">
                       <input
-                        className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                        className={`w-full rounded-xl border px-3 py-1.5 text-[11px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                          isWhiteMode
+                            ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                            : 'border-white/10 bg-black/40 text-slate-100'
+                        }`}
                         placeholder="Title (e.g. Qualify lead)"
                         value={newStepTitle}
                         onChange={(event) => setNewStepTitle(event.target.value)}
                       />
                       <textarea
-                        className="h-20 md:h-full w-full resize-none rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                        className={`h-20 md:h-full w-full resize-none rounded-xl border px-3 py-1.5 text-[11px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                          isWhiteMode
+                            ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                            : 'border-white/10 bg-black/40 text-slate-100'
+                        }`}
                         placeholder="Step details / notes"
                         value={newStepDescription}
                         onChange={(event) => setNewStepDescription(event.target.value)}
@@ -1932,7 +2444,13 @@ function App() {
                     </div>
                     <div className="space-y-2">
                       <div className="flex flex-col gap-1">
-                        <p className="text-[10px] text-slate-500">Roles (multi-select)</p>
+                        <p
+                          className={`text-[10px] ${
+                            isWhiteMode ? 'text-slate-700' : 'text-slate-500'
+                          }`}
+                        >
+                          Roles (multi-select)
+                        </p>
                         <div className="flex flex-wrap gap-1">
                           {dynamicRoleOptions.map((role) => {
                             const selectedRoles = newStepRole
@@ -1957,7 +2475,9 @@ function App() {
                                 className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${
                                   isSelected
                                     ? 'border-nest-gold/60 bg-nest-gold/20 text-nest-gold'
-                                    : 'border-white/10 bg-black/40 text-slate-200 hover:border-nest-gold/40 hover:text-nest-gold'
+                                    : isWhiteMode
+                                      ? 'border-slate-300 bg-white text-slate-700 shadow-sm hover:border-nest-gold/40 hover:text-nest-gold'
+                                      : 'border-white/10 bg-black/40 text-slate-200 hover:border-nest-gold/40 hover:text-nest-gold'
                                 }`}
                               >
                                 {role}
@@ -1969,30 +2489,52 @@ function App() {
                       <div className="flex flex-col gap-1">
                         <div className="flex items-center gap-2">
                           <input
-                            className="w-24 rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                            className={`w-24 rounded-xl border px-3 py-1.5 text-[11px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                              isWhiteMode
+                                ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                                : 'border-white/10 bg-black/40 text-slate-100'
+                            }`}
                             placeholder="Order"
                             value={newStepOrder}
                             onChange={(event) => setNewStepOrder(event.target.value)}
                           />
                           <input
-                            className="w-32 rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
-                            placeholder="Duration in days (e.g. 0.5)"
-                            value={newStepDuration}
-                            onChange={(event) => setNewStepDuration(event.target.value)}
+                            className={`w-20 rounded-xl border px-2 py-1.5 text-[11px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                              isWhiteMode
+                                ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                                : 'border-white/10 bg-black/40 text-slate-100'
+                            }`}
+                            placeholder="Days"
+                            value={newStepDurationDays}
+                            onChange={(event) => setNewStepDurationDays(event.target.value)}
+                          />
+                          <input
+                            className={`w-20 rounded-xl border px-2 py-1.5 text-[11px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                              isWhiteMode
+                                ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                                : 'border-white/10 bg-black/40 text-slate-100'
+                            }`}
+                            placeholder="Hours"
+                            value={newStepDurationHours}
+                            onChange={(event) => setNewStepDurationHours(event.target.value)}
                           />
                         </div>
-                        <p className="text-[10px] text-slate-500">
-                          Duration can be a full day (1) or a fraction (0.5 for half a day).
+                        <p
+                          className={`text-[10px] ${
+                            isWhiteMode ? 'text-slate-700' : 'text-slate-500'
+                          }`}
+                        >
+                          Duration is stored as days. Enter days and hours (hours 0-23).
                         </p>
                       </div>
                       {stepFormError && (
                         <p className="text-[10px] text-red-400">{stepFormError}</p>
                       )}
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
                         <button
                           type="submit"
                           disabled={isCreatingStep || !!selectedStep}
-                          className="flex-1 rounded-full bg-nest-gold px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                          className="flex-1 rounded-full bg-nest-gold px-3 py-0 text-[10px] font-semibold uppercase tracking-wide text-black hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           {isCreatingStep ? 'Adding...' : 'Add NEW Step'}
                         </button>
@@ -2000,9 +2542,34 @@ function App() {
                           type="button"
                           disabled={isCreatingStep || !selectedStep}
                           onClick={handleUpdateStep}
-                          className="flex-1 rounded-full border border-nest-gold/40 bg-black/40 px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-nest-gold shadow-soft-elevated hover:bg-nest-gold/10 disabled:cursor-not-allowed disabled:opacity-60"
+                          className={`flex-1 rounded-full border px-3 py-0 text-[10px] font-semibold uppercase tracking-wide disabled:cursor-not-allowed disabled:opacity-60 ${
+                            isWhiteMode
+                              ? 'border-amber-500 bg-amber-100 text-amber-900 hover:bg-amber-200'
+                              : 'border-nest-gold/40 bg-black/40 text-nest-gold hover:bg-nest-gold/10'
+                          }`}
                         >
                           {isCreatingStep ? 'Updating...' : 'Update'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isCreatingStep || !selectedStep}
+                          onClick={() => {
+                            setSelectedStepId(null)
+                            setStepFormError(null)
+                            setNewStepTitle('')
+                            setNewStepRole('')
+                            setNewStepOrder('0')
+                            setNewStepDescription('')
+                            setNewStepDurationDays('')
+                            setNewStepDurationHours('')
+                          }}
+                          className={`flex-none rounded-full border px-3 py-0 text-[10px] disabled:cursor-not-allowed disabled:opacity-60 ${
+                            isWhiteMode
+                              ? 'border-slate-300 bg-slate-50 text-slate-800 hover:border-nest-gold/40 hover:text-nest-gold'
+                              : 'border-white/15 bg-transparent text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold'
+                          }`}
+                        >
+                          Clear selection
                         </button>
                       </div>
                       <div className="mt-2 space-y-1 border-t border-red-500/25 pt-2">
@@ -2012,6 +2579,48 @@ function App() {
                         {transitionFormError && (
                           <p className="text-[10px] text-red-400">{transitionFormError}</p>
                         )}
+                        <button
+                          type="button"
+                          disabled={!selectedProcessId || isDeletingAllConnections}
+                          onClick={async () => {
+                            if (!supabase) return
+                            if (!selectedProcessId) return
+
+                            const confirmed = window.confirm(
+                              'Remove all connections for this process? This cannot be undone.',
+                            )
+                            if (!confirmed) return
+
+                            setIsDeletingAllConnections(true)
+                            setTransitionFormError(null)
+
+                            const { error } = await supabase
+                              .from('process_transitions')
+                              .delete()
+                              .eq('process_id', selectedProcessId)
+
+                            if (error) {
+                              // eslint-disable-next-line no-console
+                              console.error('Failed to delete connections for process', error)
+                              setTransitionFormError('Failed to delete all connections for this process')
+                              setIsDeletingAllConnections(false)
+                              return
+                            }
+
+                            setTransitions((prev) =>
+                              prev.filter((transition) => transition.process_id !== selectedProcessId),
+                            )
+                            setTransitionFormError(null)
+                            setIsDeletingAllConnections(false)
+                          }}
+                          className={`w-40 ml-auto rounded-full border px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wide disabled:cursor-not-allowed disabled:opacity-60 ${
+                            isWhiteMode
+                              ? 'border-red-500 bg-red-500 text-white hover:bg-red-600 hover:border-red-600'
+                              : 'border-red-500/40 bg-red-500/10 text-red-200 hover:border-red-400 hover:bg-red-500/20'
+                          }`}
+                        >
+                          Remove all connections
+                        </button>
                         <button
                           type="button"
                           disabled={!selectedStep}
@@ -2053,7 +2662,11 @@ function App() {
                             )
                             setSelectedStepId(null)
                           }}
-                          className="w-40 ml-auto rounded-full border border-red-500/40 bg-red-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-red-200 shadow-soft-elevated hover:border-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                          className={`w-40 ml-auto rounded-full border px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wide disabled:cursor-not-allowed disabled:opacity-60 ${
+                            isWhiteMode
+                              ? 'border-red-500 bg-red-500 text-white hover:bg-red-600 hover:border-red-600'
+                              : 'border-red-500/40 bg-red-500/10 text-red-200 hover:border-red-400 hover:bg-red-500/20'
+                          }`}
                         >
                           Delete selected step
                         </button>
@@ -2067,29 +2680,78 @@ function App() {
         </section>
 
         {/* Comments & details */}
-        <aside className="hidden w-80 shrink-0 flex-col rounded-2xl border border-white/5 bg-nest-surface/80 p-3 shadow-soft-elevated lg:flex">
+        {isCommentsSidebarVisible && (
+          <aside
+            className={`hidden w-80 shrink-0 flex-col rounded-2xl border p-3 lg:flex ${
+              isWhiteMode ? 'border-slate-200 bg-white' : 'border-white/5 bg-nest-surface/80'
+            }`}
+          >
           <div className="mb-2 flex items-center justify-between">
             <div>
-              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">
+              <p
+                className={`text-[11px] font-medium uppercase tracking-[0.18em] ${
+                  isWhiteMode ? 'text-slate-700' : 'text-slate-400'
+                }`}
+              >
                 Comments
               </p>
-              <p className="text-[10px] text-slate-500">Anonymous · Visible to Nest Land team</p>
+              <p
+                className={`text-[10px] ${
+                  isWhiteMode ? 'text-slate-600' : 'text-slate-500'
+                }`}
+              >
+                Anonymous · Visible to Nest Land team
+              </p>
             </div>
-            <button
-              type="button"
-              onClick={handleExportPdf}
-              className="rounded-full border border-white/10 bg-black/40 px-2.5 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
-            >
-              Export PDF
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleExportPdf}
+                className={`rounded-full border px-2.5 py-0.5 text-[10px] hover:border-nest-gold/40 hover:text-nest-gold ${
+                  isWhiteMode
+                    ? 'border-slate-300 bg-white text-slate-700'
+                    : 'border-white/10 bg-black/40 text-slate-300'
+                }`}
+              >
+                Export PDF
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsCommentsSidebarVisible(false)}
+                className={`flex h-6 w-6 items-center justify-center rounded-full border text-[10px] hover:border-nest-gold/40 hover:text-nest-gold ${
+                  isWhiteMode
+                    ? 'border-slate-300 bg-slate-50 text-slate-700'
+                    : 'border-white/10 bg-black/40 text-slate-300'
+                }`}
+                aria-label="Hide comments sidebar"
+              >
+                ×
+              </button>
+            </div>
           </div>
-          <div className="mb-3 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-[11px]">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+          <div
+            className={`mb-3 rounded-xl border px-3 py-2 text-[11px] ${
+              isWhiteMode
+                ? 'border-slate-200 bg-slate-50 text-slate-800'
+                : 'border-white/10 bg-black/30'
+            }`}
+          >
+            <p
+              className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                isWhiteMode ? 'text-slate-700' : 'text-slate-400'
+              }`}
+            >
               Step details
             </p>
             {selectedStep ? (
               <div className="mt-1 space-y-1">
-                <p className="text-[11px] font-semibold text-slate-100">{selectedStep.title}</p>
+                <p
+                  className={`text-[11px] font-semibold ${
+                    isWhiteMode ? 'text-slate-900' : 'text-slate-100'
+                  }`}
+                >
+                  {selectedStep.title}
+                </p>
                 <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-400">
                   <span>Responsibility:</span>
                   <span
@@ -2099,52 +2761,92 @@ function App() {
                     {selectedStep.role ? selectedStep.role.trim() : 'Unassigned'}
                   </span>
                 </div>
-                <p className="text-[10px] text-slate-400">
-                  Order index: <span className="text-slate-200">{selectedStep.order_index}</span>
+                <p
+                  className={`text-[10px] ${
+                    isWhiteMode ? 'text-slate-600' : 'text-slate-400'
+                  }`}
+                >
+                  Order index:{' '}
+                  <span className={isWhiteMode ? 'text-slate-900' : 'text-slate-200'}>
+                    {selectedStep.order_index}
+                  </span>
                 </p>
                 {selectedStep.description && (
-                  <p className="mt-1 text-[11px] text-slate-300 whitespace-pre-wrap">
+                  <p
+                    className={`mt-1 text-[11px] whitespace-pre-wrap ${
+                      isWhiteMode ? 'text-slate-800' : 'text-slate-300'
+                    }`}
+                  >
                     {selectedStep.description}
                   </p>
                 )}
               </div>
             ) : (
-              <p className="mt-1 text-[10px] text-slate-500">
+              <p
+                className={`mt-1 text-[10px] ${
+                  isWhiteMode ? 'text-slate-600' : 'text-slate-500'
+                }`}
+              >
                 Click a step in the flow to see responsibilities and notes here.
               </p>
             )}
           </div>
-          <div className="flex-1 space-y-2 overflow-y-auto text-[11px]">
+          <div className="flex-1 max-h-80 space-y-2 overflow-y-auto pr-1 text-[11px]">
             {isLoadingComments ? (
               <p className="text-[11px] text-slate-500">Loading comments...</p>
             ) : visibleComments.length === 0 ? (
               <p className="text-[11px] text-slate-500">
                 {selectedStep
                   ? 'No comments yet for this step.'
-                  : 'No comments yet for this process.'}
+                  : 'Select a step in the flow to see its comments here.'}
               </p>
             ) : (
               visibleComments.map((comment) => (
                 <div
                   key={comment.id}
-                  className="rounded-xl border border-white/10 bg-black/30 px-3 py-2"
+                  className={`rounded-xl border px-3 py-2 ${
+                    isWhiteMode
+                      ? 'border-slate-200 bg-slate-50'
+                      : 'border-white/10 bg-black/30'
+                  }`}
                 >
-                  <p className="text-slate-200 whitespace-pre-wrap">{comment.body}</p>
-                  <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                  <p
+                    className={`whitespace-pre-wrap ${
+                      isWhiteMode ? 'text-slate-800' : 'text-slate-200'
+                    }`}
+                  >
+                    {comment.body}
+                  </p>
+                  <div
+                    className={`mt-1 flex items-center justify-between gap-2 text-[10px] ${
+                      isWhiteMode ? 'text-slate-500' : 'text-slate-500'
+                    }`}
+                  >
                     <span>
                       {(selectedProcess?.name ?? 'Workflow')} ·{' '}
                       {comment.status === 'open' ? 'open' : 'resolved'} ·{' '}
                       {new Date(comment.created_at).toLocaleString()}
                     </span>
-                    {isAdmin && comment.status === 'open' && (
-                      <button
-                        type="button"
-                        onClick={() => handleResolveComment(comment.id)}
-                        disabled={resolvingCommentId === comment.id}
-                        className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-300 hover:border-emerald-400 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {resolvingCommentId === comment.id ? 'Resolving…' : 'Mark resolved'}
-                      </button>
+                    {isAdmin && (
+                      <div className="flex gap-1">
+                        {comment.status === 'open' && (
+                          <button
+                            type="button"
+                            onClick={() => handleResolveComment(comment.id)}
+                            disabled={resolvingCommentId === comment.id}
+                            className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-300 hover:border-emerald-400 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {resolvingCommentId === comment.id ? 'Resolving…' : 'Mark resolved'}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteComment(comment.id)}
+                          className="rounded-full border border-red-500/40 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium text-red-200 hover:border-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Delete
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -2156,7 +2858,11 @@ function App() {
           </div>
           <form className="mt-3 space-y-2" onSubmit={handleSubmitComment}>
             <textarea
-              className="h-20 w-full resize-none rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[11px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+              className={`h-20 w-full resize-none rounded-xl border px-3 py-2 text-[11px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                isWhiteMode
+                  ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                  : 'border-white/10 bg-black/40 text-slate-100'
+              }`}
               value={newComment}
               onChange={(event) => setNewComment(event.target.value)}
               disabled={isSubmittingComment || !supabase || !user}
@@ -2170,23 +2876,38 @@ function App() {
               <button
                 type="submit"
                 disabled={isSubmittingComment || !supabase || !user}
-                className="rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isSubmittingComment ? 'Posting...' : 'Post comment'}
               </button>
             </div>
           </form>
         </aside>
+        )}
       </main>
       ) : activePage === 'projects' ? (
         <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-4 px-6 pb-6 pt-4">
-          <section className="flex-1 rounded-2xl border border-white/5 bg-nest-surface/80 p-4 text-[11px] text-slate-100 shadow-soft-elevated">
+          <section
+            className={`flex-1 rounded-2xl border p-4 text-[11px] ${
+              isWhiteMode
+                ? 'border-slate-200 bg-white text-slate-900'
+                : 'border-white/5 bg-nest-surface/80 text-slate-100'
+            }`}
+          >
             <div className="mb-3 flex items-center justify-between gap-2">
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                <p
+                  className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                    isWhiteMode ? 'text-slate-900' : 'text-slate-400'
+                  }`}
+                >
                   Projects
                 </p>
-                <p className="text-[11px] text-slate-400">
+                <p
+                  className={`text-[11px] ${
+                    isWhiteMode ? 'text-slate-700' : 'text-slate-400'
+                  }`}
+                >
                   Create projects from process templates and track where each one is in the workflow.
                 </p>
               </div>
@@ -2198,7 +2919,13 @@ function App() {
             <div className="flex flex-col gap-4 md:flex-row md:items-start">
               <div className="flex-1 space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-[10px] font-semibold text-slate-300">Current projects</p>
+                  <p
+                    className={`text-[10px] font-semibold ${
+                      isWhiteMode ? 'text-slate-900' : 'text-slate-300'
+                    }`}
+                  >
+                    Current projects
+                  </p>
                   {isLoadingProjects && (
                     <span className="text-[10px] text-slate-500">Loading...</span>
                   )}
@@ -2222,22 +2949,45 @@ function App() {
                         : null
 
                       const stepComments: ProjectStepComment[] = currentStep
-                        ? projectComments.filter(
-                            (comment) =>
-                              comment.project_id === project.id &&
-                              comment.step_id === currentStep.id,
-                          )
+                        ? projectComments
+                            .filter(
+                              (comment) =>
+                                comment.project_id === project.id &&
+                                comment.step_id === currentStep.id,
+                            )
+                            .slice()
+                            .sort(
+                              (a, b) =>
+                                new Date(b.created_at).getTime() -
+                                new Date(a.created_at).getTime(),
+                            )
                         : []
 
                       const lastStepActivity = stepComments[0] ?? null
 
-                      const previousStepActivities = stepsForProcess
-                        .filter((step) => step.id !== project.current_step_id)
+                      const sortedStepsForProcess = stepsForProcess
+                        .slice()
+                        .sort((a, b) => a.order_index - b.order_index)
+
+                      const previousStepActivities = sortedStepsForProcess
+                        .filter((step) => {
+                          if (!currentStep) return false
+                          return step.order_index < currentStep.order_index
+                        })
                         .map((step) => {
-                          const activity = projectComments.find(
-                            (comment) =>
-                              comment.project_id === project.id && comment.step_id === step.id,
-                          )
+                          const commentsForStep = projectComments
+                            .filter(
+                              (comment) =>
+                                comment.project_id === project.id &&
+                                comment.step_id === step.id,
+                            )
+                            .slice()
+                            .sort(
+                              (a, b) =>
+                                new Date(b.created_at).getTime() -
+                                new Date(a.created_at).getTime(),
+                            )
+                          const activity = commentsForStep[0]
                           if (!activity) return null
                           return { step, activity }
                         })
@@ -2247,10 +2997,12 @@ function App() {
                           ): item is { step: ProjectStepSummary; activity: ProjectStepComment } =>
                             item !== null,
                         )
-
-                      const sortedStepsForProcess = stepsForProcess
                         .slice()
-                        .sort((a, b) => a.order_index - b.order_index)
+                        .sort(
+                          (a, b) =>
+                            new Date(b.activity.created_at).getTime() -
+                            new Date(a.activity.created_at).getTime(),
+                        )
                       const currentIndex = currentStep
                         ? sortedStepsForProcess.findIndex((step) => step.id === currentStep.id)
                         : -1
@@ -2278,7 +3030,11 @@ function App() {
                       return (
                         <div
                           key={project.id}
-                          className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-[11px]"
+                          className={`rounded-xl border px-3 py-2 text-[11px] ${
+                            isWhiteMode
+                              ? 'border-slate-200 bg-slate-50 text-slate-800'
+                              : 'border-white/10 bg-black/30 text-slate-100'
+                          }`}
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="min-w-0 flex-1">
@@ -2288,7 +3044,11 @@ function App() {
                                   onSubmit={(event) => void handleSaveProjectName(event, project.id)}
                                 >
                                   <input
-                                    className="w-full rounded-xl border border-white/10 bg-black/40 px-2 py-1 text-[10px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                                    className={`w-full rounded-xl border px-2 py-1 text-[10px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                                      isWhiteMode
+                                        ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                                        : 'border-white/10 bg-black/40 text-slate-100'
+                                    }`}
                                     value={editingProjectName}
                                     onChange={(event) => setEditingProjectName(event.target.value)}
                                   />
@@ -2296,7 +3056,7 @@ function App() {
                                     <button
                                       type="submit"
                                       disabled={isUpdatingProjectNameId === project.id}
-                                      className="rounded-full bg-nest-gold px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                                      className="rounded-full bg-nest-gold px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-black hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
                                     >
                                       {isUpdatingProjectNameId === project.id ? 'Saving…' : 'Save name'}
                                     </button>
@@ -2312,17 +3072,35 @@ function App() {
                               ) : (
                                 <>
                                   <div className="flex items-center gap-2">
-                                    <p className="truncate text-[11px] font-semibold text-slate-100">
+                                    <p
+                                      className={`truncate text-[11px] font-semibold ${
+                                        isWhiteMode ? 'text-slate-900' : 'text-slate-100'
+                                      }`}
+                                    >
                                       {project.name}
                                     </p>
                                     {isAdmin && (
-                                      <button
-                                        type="button"
-                                        onClick={() => handleStartEditProjectName(project)}
-                                        className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[9px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
-                                      >
-                                        Edit
-                                      </button>
+                                      <div className="flex items-center gap-1">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleStartEditProjectName(project)}
+                                          className={`rounded-full px-2 py-0.5 text-[9px] font-semibold ${
+                                            isWhiteMode
+                                              ? 'border border-black bg-black text-white hover:bg-slate-900'
+                                              : 'border border-white/30 bg-black text-white hover:border-nest-gold/40'
+                                          }`}
+                                        >
+                                          Edit
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => void handleDeleteProject(project.id)}
+                                          disabled={isDeletingProjectId === project.id}
+                                          className="rounded-full border border-red-500/60 bg-red-500/10 px-2 py-0.5 text-[9px] font-semibold text-red-200 hover:border-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                        >
+                                          {isDeletingProjectId === project.id ? 'Deleting…' : 'Delete'}
+                                        </button>
+                                      </div>
                                     )}
                                   </div>
                                   <p className="mt-0.5 text-[10px] text-slate-500">
@@ -2333,30 +3111,36 @@ function App() {
                               )}
                             </div>
                             <div className="flex flex-col items-end gap-1 text-[10px] text-slate-400">
-                              <span className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5">
-                                {project.status || 'active'}
-                              </span>
-                              {previousStepActivities.length > 0 && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setExpandedProjectHistoryId((current) =>
-                                      current === project.id ? null : project.id,
-                                    )
-                                  }
-                                  className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[9px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
-                                >
-                                  {expandedProjectHistoryId === project.id
-                                    ? 'Hide history'
-                                    : 'Previous steps'}
-                                </button>
-                              )}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedProjectHistoryId((current) =>
+                                    current === project.id ? null : project.id,
+                                  )
+                                }
+                                disabled={previousStepActivities.length === 0}
+                                className={`rounded-full px-2 py-0.5 text-[9px] font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
+                                  isWhiteMode
+                                    ? 'border border-black bg-black text-white hover:bg-slate-900'
+                                    : 'border border-white/30 bg-black text-white hover:border-nest-gold/40'
+                                }`}
+                              >
+                                History
+                              </button>
                             </div>
                           </div>
                           <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1.3fr)]">
                             <div className="space-y-1">
                               <p className="text-[10px] text-slate-400">Progress</p>
-                              <p className="text-[10px] text-slate-300">
+                              <p
+                                className={`text-[10px] ${
+                                  currentStep
+                                    ? isWhiteMode
+                                      ? 'font-semibold text-slate-900'
+                                      : 'font-semibold text-slate-100'
+                                    : 'text-slate-500'
+                                }`}
+                              >
                                 {currentStep
                                   ? `${currentStep.order_index}. ${currentStep.title}`
                                   : 'Not started yet.'}
@@ -2405,7 +3189,11 @@ function App() {
                                     const previous = stepsForProcess[index - 1]
                                     void handleChangeProjectStep(project.id, previous.id)
                                   }}
-                                  className="flex-1 inline-flex items-center justify-center rounded-full border border-red-500/60 bg-red-500/15 px-3 py-1 text-[10px] font-semibold text-red-200 hover:border-red-400 hover:bg-red-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                                  className={`flex-1 inline-flex items-center justify-center rounded-full border px-3 py-1 text-[10px] font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
+                                    isWhiteMode
+                                      ? 'border-red-500 bg-red-500 text-white hover:bg-red-600 hover:border-red-600'
+                                      : 'border-red-500/60 bg-red-500/15 text-red-200 hover:border-red-400 hover:bg-red-500/25'
+                                  }`}
                                 >
                                   &lt;- Go Back
                                 </button>
@@ -2427,14 +3215,30 @@ function App() {
                                     const next = stepsForProcess[index + 1]
                                     void handleChangeProjectStep(project.id, next.id)
                                   }}
-                                  className="flex-1 inline-flex items-center justify-center rounded-full border border-emerald-500/60 bg-emerald-500/15 px-3 py-1 text-[10px] font-semibold text-emerald-300 hover:border-emerald-400 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                                  className={`flex-1 inline-flex items-center justify-center rounded-full border px-3 py-1 text-[10px] font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
+                                    isWhiteMode
+                                      ? 'border-emerald-500 bg-emerald-500 text-white hover:bg-emerald-600 hover:border-emerald-600'
+                                      : 'border-emerald-500/60 bg-emerald-500/15 text-emerald-300 hover:border-emerald-400 hover:bg-emerald-500/25'
+                                  }`}
                                 >
                                   Done -&gt;
                                 </button>
                               </div>
                             </div>
-                            <div className="space-y-1 rounded-lg border border-white/10 bg-black/30 p-2">
-                              <p className="text-[10px] font-semibold text-slate-300">Step comments</p>
+                            <div
+                              className={`space-y-1 rounded-lg border p-2 ${
+                                isWhiteMode
+                                  ? 'border-slate-200 bg-slate-50'
+                                  : 'border-white/10 bg-black/30'
+                              }`}
+                            >
+                              <p
+                                className={`text-[10px] font-semibold ${
+                                  isWhiteMode ? 'text-slate-800' : 'text-slate-300'
+                                }`}
+                              >
+                                Step comments
+                              </p>
                               {!currentStep ? (
                                 <p className="text-[10px] text-slate-500">
                                   Start the project to comment on steps.
@@ -2448,9 +3252,17 @@ function App() {
                                   {stepComments.map((comment) => (
                                     <div
                                       key={comment.id}
-                                      className="rounded border border-white/10 bg-black/40 px-2 py-1"
+                                      className={`rounded border px-2 py-1 ${
+                                        isWhiteMode
+                                          ? 'border-slate-200 bg-white'
+                                          : 'border-white/10 bg-black/40'
+                                      }`}
                                     >
-                                      <p className="text-[10px] text-slate-200 whitespace-pre-wrap">
+                                      <p
+                                        className={`text-[10px] whitespace-pre-wrap ${
+                                          isWhiteMode ? 'text-slate-800' : 'text-slate-200'
+                                        }`}
+                                      >
                                         {comment.body}
                                       </p>
                                       <div className="mt-0.5 flex items-center justify-between gap-2">
@@ -2487,7 +3299,11 @@ function App() {
                                   }
                                 >
                                   <textarea
-                                    className="h-12 w-full resize-none rounded border border-white/10 bg-black/40 px-2 py-1 text-[10px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                                    className={`h-12 w-full resize-none rounded border px-2 py-1 text-[10px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                                      isWhiteMode
+                                        ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                                        : 'border-white/10 bg-black/40 text-slate-100'
+                                    }`}
                                     value={commentDraft}
                                     onChange={(event) => {
                                       if (!commentKey) return
@@ -2507,11 +3323,8 @@ function App() {
                                   <div className="flex justify-end">
                                     <button
                                       type="submit"
-                                      disabled=
-                                        {!user ||
-                                          !commentKey ||
-                                          isSubmittingProjectCommentKey === commentKey}
-                                      className="rounded-full bg-nest-gold px-2.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                                      disabled={isSubmittingProjectCommentKey === commentKey}
+                                      className="rounded-full bg-nest-gold px-2.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-black hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
                                     >
                                       {commentKey && isSubmittingProjectCommentKey === commentKey
                                         ? 'Posting...'
@@ -2522,27 +3335,58 @@ function App() {
                               )}
                             </div>
                           </div>
-                          {expandedProjectHistoryId === project.id &&
-                            previousStepActivities.length > 0 && (
-                              <div className="mt-2 rounded-lg border border-white/10 bg-black/30 p-2 text-[10px] text-slate-200">
-                                <p className="mb-1 text-[10px] font-semibold text-slate-300">
-                                  Previous steps activity
+                          {expandedProjectHistoryId === project.id && (
+                              <div
+                                className={`mt-2 rounded-lg border p-2 text-[10px] ${
+                                  isWhiteMode
+                                    ? 'border-slate-200 bg-slate-50 text-slate-800'
+                                    : 'border-white/10 bg-black/30 text-slate-200'
+                                }`}
+                              >
+                                <p
+                                  className={`mb-1 text-[10px] font-semibold ${
+                                    isWhiteMode ? 'text-slate-800' : 'text-slate-300'
+                                  }`}
+                                >
+                                  History
                                 </p>
-                                <ul className="space-y-1 max-h-32 overflow-y-auto">
-                                  {previousStepActivities.map(({ step, activity }) => (
-                                    <li key={step.id} className="flex flex-col">
-                                      <span className="text-[10px] text-slate-200">
-                                        {step.order_index}. {step.title}
-                                      </span>
-                                      <span className="text-[9px] text-slate-500">
-                                        {activity.created_by && activity.created_by === user?.id
-                                          ? 'By you'
-                                          : 'By team member'}{' '}
-                                        at {new Date(activity.created_at).toLocaleString()}
-                                      </span>
-                                    </li>
-                                  ))}
-                                </ul>
+                                {previousStepActivities.length === 0 ? (
+                                  <p className="text-[9px] text-slate-500">No history yet.</p>
+                                ) : (
+                                  <ul className="space-y-1 max-h-32 overflow-y-auto">
+                                    {previousStepActivities.map(({ step, activity }) => {
+                                      const actorLabel =
+                                        activity.created_by && activity.created_by === user?.id
+                                          ? 'You'
+                                          : 'Team member'
+                                      const timestamp = new Date(
+                                        activity.created_at,
+                                      ).toLocaleString()
+                                      const hasComment = !!activity.body && activity.body.trim().length > 0
+                                      return (
+                                        <li key={step.id} className="flex flex-col">
+                                          <span
+                                            className={`text-[10px] ${
+                                              isWhiteMode ? 'text-slate-900' : 'text-slate-200'
+                                            }`}
+                                          >
+                                            {actorLabel} moved to step {step.order_index}. {step.title}
+                                          </span>
+                                          <span
+                                            className={`text-[9px] ${
+                                              isWhiteMode ? 'text-slate-700' : 'text-slate-500'
+                                            }`}
+                                          >
+                                            at {timestamp}{' '}
+                                            {hasComment
+                                              ? `· Comment: "${activity.body}"`
+                                              : '· No comment'}
+                                          </span>
+                                        </li>
+                                      )
+                                    })}
+                                  </ul>
+                                )}
                               </div>
                             )}
                         </div>
@@ -2551,7 +3395,13 @@ function App() {
                   </div>
                 )}
               </div>
-              <aside className="mt-2 w-full max-w-xs rounded-2xl border border-white/10 bg-black/30 p-3 text-[10px] text-slate-100 md:mt-0 md:ml-4">
+              <aside
+                className={`mt-2 w-full max-w-xs rounded-2xl border p-3 text-[10px] md:mt-0 md:ml-4 ${
+                  isWhiteMode
+                    ? 'border-slate-200 bg-white text-slate-900'
+                    : 'border-white/10 bg-black/30 text-slate-100'
+                }`}
+              >
                 <form className="space-y-2" onSubmit={handleCreateProject}>
                   <div>
                     <p className="text-[10px] font-semibold text-slate-300">New project</p>
@@ -2562,14 +3412,22 @@ function App() {
                     </p>
                   </div>
                   <input
-                    className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-1 text-[10px] text-slate-100 placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                    className={`w-full rounded-xl border px-3 py-1 text-[10px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                      isWhiteMode
+                        ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                        : 'border-white/10 bg-black/40 text-slate-100'
+                    }`}
                     placeholder="Project name"
                     value={newProjectName}
                     onChange={(event) => setNewProjectName(event.target.value)}
                     disabled={!user}
                   />
                   <select
-                    className="w-full rounded-xl border border-white/10 bg-black/40 px-2.5 py-1 text-[10px] text-slate-100 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50"
+                    className={`w-full rounded-xl border px-2.5 py-1 text-[10px] focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                      isWhiteMode
+                        ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
+                        : 'border-white/10 bg-black/40 text-slate-100'
+                    }`}
                     value={newProjectProcessId}
                     onChange={(event) => setNewProjectProcessId(event.target.value)}
                     disabled={!user}
@@ -2840,14 +3698,32 @@ function App() {
         <div className="print-container">
           <header className="print-header">
             <div className="print-header-main">
-              <div className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-nest-gold/60 bg-gradient-to-br from-nest-green-dark to-black text-[10px] font-semibold tracking-[0.18em] text-nest-gold">
-                NL
-              </div>
-              <div className="ml-2">
-                <h1 className="print-title">Nestland Workflow Export</h1>
+              <div>
+                <h1 className="print-title">Workflow Export</h1>
                 {selectedProcess?.name && (
                   <p className="print-subtitle">Process: {selectedProcess.name}</p>
                 )}
+                {steps.length > 0 &&
+                  (() => {
+                    const totalPoints = steps.length
+                    const totalDays = steps.reduce((sum, step) => {
+                      const value = step.duration_days ?? 0
+                      return sum + (Number.isFinite(value) ? value : 0)
+                    }, 0)
+                    const totalHours = Math.round(totalDays * 24)
+                    const days = Math.floor(totalHours / 24)
+                    const hours = totalHours % 24
+                    const parts: string[] = []
+                    if (days > 0) parts.push(`${days}d`)
+                    if (hours > 0) parts.push(`${hours}h`)
+                    const durationLabel = parts.length > 0 ? parts.join(' ') : '0d'
+
+                    return (
+                      <p className="print-meta">
+                        Total: {totalPoints} points · {durationLabel}
+                      </p>
+                    )
+                  })()}
               </div>
             </div>
             <p className="print-meta">
@@ -2862,7 +3738,7 @@ function App() {
                   <th>#</th>
                   <th>Step</th>
                   <th>Responsibility</th>
-                  <th>Time (days)</th>
+                  <th>Time</th>
                   <th>Details</th>
                 </tr>
               </thead>
@@ -2876,9 +3752,18 @@ function App() {
                       <td>{step.title}</td>
                       <td>{step.role ?? 'Unassigned'}</td>
                       <td>
-                        {step.duration_days !== null && step.duration_days !== undefined
-                          ? step.duration_days
-                          : ''}
+                        {(() => {
+                          const value = step.duration_days
+                          if (value === null || value === undefined) return ''
+                          const total = value || 0
+                          const wholeDays = Math.trunc(total)
+                          const hours = Math.round((total - wholeDays) * 24)
+                          const parts: string[] = []
+                          if (wholeDays) parts.push(`${wholeDays}d`)
+                          if (hours) parts.push(`${hours}h`)
+                          if (parts.length === 0) return '0d'
+                          return parts.join(' ')
+                        })()}
                       </td>
                       <td>{step.description ?? ''}</td>
                     </tr>
@@ -2889,8 +3774,18 @@ function App() {
         </div>
       </div>
       {isFullscreen && (
-        <div className="fixed inset-0 z-40 flex flex-col bg-black/95">
-          <header className="flex items-center justify-between border-b border-white/10 bg-black/70 px-4 py-2 text-[11px] text-slate-300">
+        <div
+          className={`fixed inset-0 z-40 flex flex-col ${
+            isWhiteMode ? 'bg-slate-100' : 'bg-black/95'
+          }`}
+        >
+          <header
+            className={`flex items-center justify-between border-b px-4 py-2 text-[11px] ${
+              isWhiteMode
+                ? 'border-slate-200 bg-white text-slate-800'
+                : 'border-white/10 bg-black/70 text-slate-300'
+            }`}
+          >
             <div className="flex items-center gap-2">
               <span className="rounded-full border border-nest-gold/40 bg-nest-gold/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-nest-gold">
                 {selectedProcess?.name ?? 'Workflow'}
@@ -2900,12 +3795,22 @@ function App() {
             <button
               type="button"
               onClick={() => setIsFullscreen(false)}
-              className="rounded-full border border-white/10 bg-black/40 px-2.5 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+              className={`rounded-full border px-2.5 py-0.5 text-[10px] hover:border-nest-gold/40 hover:text-nest-gold ${
+                isWhiteMode
+                  ? 'border-slate-300 bg-white text-slate-700 shadow-sm'
+                  : 'border-white/10 bg-black/40 text-slate-300'
+              }`}
             >
               Close
             </button>
           </header>
-          <div className="relative flex-1 bg-gradient-to-br from-black via-slate-900 to-black">
+          <div
+            className={`relative flex-1 bg-gradient-to-br ${
+              isWhiteMode
+                ? 'from-slate-100 via-slate-50 to-slate-100'
+                : 'from-black via-slate-900 to-black'
+            }`}
+          >
             <ReactFlowProvider>
               <ReactFlow
                 nodes={nodes}
@@ -2923,26 +3828,50 @@ function App() {
                 onNodeClick={(_, node) => handleSelectStep(node.id)}
                 onPaneClick={() => setSelectedStepId(null)}
               >
-                <Background color="#111827" gap={24} />
+                <Background color={isWhiteMode ? '#e5e7eb' : '#111827'} gap={24} />
                 <Controls position="bottom-right" />
               </ReactFlow>
             </ReactFlowProvider>
             {selectedStep && (
-              <div className="pointer-events-auto absolute top-4 right-4 z-50 w-80 max-w-[90vw] rounded-2xl border border-white/10 bg-black/80 p-3 text-[11px] text-slate-100 shadow-soft-elevated backdrop-blur">
+              <div
+                className={`pointer-events-auto absolute top-4 right-4 z-50 w-80 max-w-[90vw] rounded-2xl border p-3 text-[11px] shadow-soft-elevated backdrop-blur ${
+                  isWhiteMode
+                    ? 'border-slate-200 bg-white text-slate-900'
+                    : 'border-white/10 bg-black/80 text-slate-100'
+                }`}
+              >
                 <div className="mb-1 flex items-center justify-between gap-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  <p
+                    className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                      isWhiteMode ? 'text-slate-700' : 'text-slate-400'
+                    }`}
+                  >
                     Step details
                   </p>
                   <button
                     type="button"
                     onClick={() => setSelectedStepId(null)}
-                    className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-slate-300 hover:border-nest-gold/40 hover:text-nest-gold"
+                    className={`rounded-full border px-2 py-0.5 text-[10px] hover:border-nest-gold/40 hover:text-nest-gold ${
+                      isWhiteMode
+                        ? 'border-slate-300 bg-slate-50 text-slate-800'
+                        : 'border-white/10 bg-black/40 text-slate-300'
+                    }`}
                   >
                     Close
                   </button>
                 </div>
-                <p className="text-[11px] font-semibold text-slate-50">{selectedStep.title}</p>
-                <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-slate-400">
+                <p
+                  className={`text-[11px] font-semibold ${
+                    isWhiteMode ? 'text-slate-900' : 'text-slate-50'
+                  }`}
+                >
+                  {selectedStep.title}
+                </p>
+                <div
+                  className={`mt-1 flex flex-wrap items-center gap-2 text-[10px] ${
+                    isWhiteMode ? 'text-slate-700' : 'text-slate-400'
+                  }`}
+                >
                   <span>Responsibility:</span>
                   <span
                     className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] ${getRoleBadgeClasses(selectedStep.role)}`}
@@ -2951,11 +3880,22 @@ function App() {
                     {selectedStep.role ?? 'Unassigned'}
                   </span>
                 </div>
-                <p className="mt-1 text-[10px] text-slate-400">
-                  Order index: <span className="text-slate-200">{selectedStep.order_index}</span>
+                <p
+                  className={`mt-1 text-[10px] ${
+                    isWhiteMode ? 'text-slate-700' : 'text-slate-400'
+                  }`}
+                >
+                  Order index:{' '}
+                  <span className={isWhiteMode ? 'text-slate-900' : 'text-slate-200'}>
+                    {selectedStep.order_index}
+                  </span>
                 </p>
                 {selectedStep.description && (
-                  <p className="mt-1 text-[11px] text-slate-200 whitespace-pre-wrap">
+                  <p
+                    className={`mt-1 text-[11px] whitespace-pre-wrap ${
+                      isWhiteMode ? 'text-slate-800' : 'text-slate-200'
+                    }`}
+                  >
                     {selectedStep.description}
                   </p>
                 )}

@@ -18,6 +18,12 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+:root.theme-light {
+  color-scheme: light;
+  --tw-bg-opacity: 1;
+  --tw-text-opacity: 1;
+}
+
 a {
   font-weight: 500;
   color: #e2c76a;
@@ -27,12 +33,24 @@ a:hover {
   color: #f5e3a6;
 }
 
+:root.theme-light a {
+  color: #b8860b;
+}
+:root.theme-light a:hover {
+  color: #9a7209;
+}
+
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
   background: radial-gradient(circle at top, #111827 0, #050608 55%, #020617 100%);
   color: #f9fafb;
+}
+
+body.theme-light {
+  background: linear-gradient(135deg, #ffffff 0%, #f1f5f9 50%, #e2e8f0 100%);
+  color: #0f172a;
 }
 
 h1 {
