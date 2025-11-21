@@ -2299,36 +2299,43 @@ function App() {
           >
             {viewMode === 'workflow' ? (
               <ReactFlowProvider>
-                <ReactFlow
-                  nodes={nodes}
-                  edges={edges}
-                  fitView
-                  style={{ width: '100%', height: '100%' }}
-                  proOptions={{ hideAttribution: true }}
-                  panOnScroll
-                  zoomOnScroll
-                  zoomOnPinch
-                  panOnDrag
-                  selectionOnDrag={false}
-                  nodesDraggable={false}
-                  onConnect={handleConnect}
-                  onNodeClick={(_, node) => handleSelectStep(node.id)}
-                  onEdgeClick={(_, edge) => {
-                    if (!isAdmin) return
-                    if (window.confirm('Delete this connection between steps?')) {
-                      void handleDeleteTransition(edge.id)
-                    }
-                  }}
-                  onPaneClick={() => setSelectedStepId(null)}
-                >
-                  <FitViewOnInit
-                    nodeCount={nodes.length}
-                    selectedProcessId={selectedProcessId}
-                    flowVersion={flowVersion}
-                  />
-                  <Background color={isWhiteMode ? '#e5e7eb' : '#111827'} gap={24} />
-                  <Controls position="bottom-right" />
-                </ReactFlow>
+                {selectedProcessId && nodes.length > 0 ? (
+                  <ReactFlow
+                    key={`${selectedProcessId ?? 'none'}:${flowVersion}`}
+                    nodes={nodes}
+                    edges={edges}
+                    fitView
+                    style={{ width: '100%', height: '100%' }}
+                    proOptions={{ hideAttribution: true }}
+                    panOnScroll
+                    zoomOnScroll
+                    zoomOnPinch
+                    panOnDrag
+                    selectionOnDrag={false}
+                    nodesDraggable={false}
+                    onConnect={handleConnect}
+                    onNodeClick={(_, node) => handleSelectStep(node.id)}
+                    onEdgeClick={(_, edge) => {
+                      if (!isAdmin) return
+                      if (window.confirm('Delete this connection between steps?')) {
+                        void handleDeleteTransition(edge.id)
+                      }
+                    }}
+                    onPaneClick={() => setSelectedStepId(null)}
+                  >
+                    <FitViewOnInit
+                      nodeCount={nodes.length}
+                      selectedProcessId={selectedProcessId}
+                      flowVersion={flowVersion}
+                    />
+                    <Background color={isWhiteMode ? '#e5e7eb' : '#111827'} gap={24} />
+                    <Controls position="bottom-right" />
+                  </ReactFlow>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-[11px] text-slate-500">
+                    {isLoadingFlow ? 'Loading workflow...' : 'No steps defined yet.'}
+                  </div>
+                )}
               </ReactFlowProvider>
             ) : (
               <div
