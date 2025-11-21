@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react'
 import './App.css'
 import {
   Background,
@@ -7,7 +7,6 @@ import {
   ReactFlowProvider,
   type Edge,
   type Node,
-  type ReactFlowInstance,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import type { User } from '@supabase/supabase-js'
@@ -232,9 +231,7 @@ function App() {
     return stored === 'light'
   })
 
-  const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null)
-  const hasInitialFitRef = useRef(false)
-  const lastSelectedProcessIdRef = useRef<string | null>(null)
+  
 
   const [wikiUrl, setWikiUrl] = useState(() => {
     if (typeof window === 'undefined') return ''
@@ -590,34 +587,7 @@ function App() {
     }
   }, [activePage, user])
 
-  useEffect(() => {
-    if (!reactFlowInstance) return
-    if (!selectedProcessId) return
-    if (steps.length === 0) return
-
-    // If the selected process changed, allow a fresh auto-fit for this process.
-    if (lastSelectedProcessIdRef.current !== selectedProcessId) {
-      hasInitialFitRef.current = false
-      lastSelectedProcessIdRef.current = selectedProcessId
-    }
-
-    if (hasInitialFitRef.current) return
-
-    // Auto-fit and slightly zoom in the workflow for the first view of this process.
-    reactFlowInstance.fitView({ padding: 0.2 })
-    const currentZoom = reactFlowInstance.getZoom()
-    const targetZoom = Math.min(currentZoom * 1.2, 2)
-    reactFlowInstance.zoomTo(targetZoom)
-
-    // Select the first step (by order_index) when opening the process.
-    const sorted = steps.slice().sort((a, b) => a.order_index - b.order_index)
-    const firstStep = sorted[0]
-    if (firstStep) {
-      setSelectedStepId(firstStep.id)
-    }
-
-    hasInitialFitRef.current = true
-  }, [reactFlowInstance, selectedProcessId, steps])
+  
 
   useEffect(() => {
     const client = supabase
@@ -1088,11 +1058,6 @@ function App() {
   const handleSelectProcess = (slug: string, id: string) => {
     setSelectedProcessSlug(slug)
     setSelectedProcessId(id)
-
-    // Whenever a new workflow is selected, allow the canvas to auto-fit and
-    // restart from the first step for that process.
-    hasInitialFitRef.current = false
-    lastSelectedProcessIdRef.current = id
 
     if (isAdmin) {
       const process = processes.find((p) => p.id === id)
@@ -2306,7 +2271,6 @@ function App() {
                     }
                   }}
                   onPaneClick={() => setSelectedStepId(null)}
-                  onInit={(instance) => setReactFlowInstance(instance)}
                 >
                   <Background color={isWhiteMode ? '#e5e7eb' : '#111827'} gap={24} />
                   <Controls position="bottom-right" />
