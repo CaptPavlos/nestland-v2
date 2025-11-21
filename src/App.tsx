@@ -5,6 +5,7 @@ import {
   Controls,
   ReactFlow,
   ReactFlowProvider,
+  useReactFlow,
   type Edge,
   type Node,
 } from 'reactflow'
@@ -124,6 +125,25 @@ function getRoleBadgeClasses(role: string | null): string {
   return 'border-slate-400 bg-slate-100 text-slate-800'
 }
 
+function FitViewOnInit(props: {
+  nodeCount: number
+  selectedProcessId: string | null
+  flowVersion: number
+}) {
+  const { nodeCount, selectedProcessId, flowVersion } = props
+  const instance = useReactFlow()
+
+  useEffect(() => {
+    if (!selectedProcessId || nodeCount === 0) return
+    const id = window.setTimeout(() => {
+      instance.fitView({ padding: 0.2 })
+    }, 0)
+    return () => window.clearTimeout(id)
+  }, [selectedProcessId, nodeCount, flowVersion, instance])
+
+  return null
+}
+
 function App() {
   const [user, setUser] = useState<User | null>(null)
   const [authMessage, setAuthMessage] = useState<string | null>(null)
@@ -142,6 +162,7 @@ function App() {
   const [isLoadingFlow, setIsLoadingFlow] = useState(false)
   const [processError, setProcessError] = useState<string | null>(null)
   const [flowError, setFlowError] = useState<string | null>(null)
+  const [flowVersion, setFlowVersion] = useState(0)
 
   const [newProcessSlug, setNewProcessSlug] = useState('')
   const [newProcessName, setNewProcessName] = useState('')
@@ -322,10 +343,8 @@ function App() {
           setProcessError(null)
 
           if (rows.length > 0) {
-            const existingBySlug = selectedProcessSlug
-              ? rows.find((p) => p.slug === selectedProcessSlug)
-              : undefined
-            const first = existingBySlug ?? rows[0]
+            const preferred = rows.find((p) => p.slug === DEFAULT_PROCESS_SLUG)
+            const first = preferred ?? rows[0]
             setSelectedProcessSlug(first.slug)
             setSelectedProcessId(first.id)
           } else {
@@ -341,7 +360,7 @@ function App() {
     return () => {
       isCancelled = true
     }
-  }, [selectedProcessSlug])
+  }, [])
 
   useEffect(() => {
     if (activePage !== 'wiki') return
@@ -392,11 +411,7 @@ function App() {
     const loadProjects = async () => {
       setIsLoadingProjects(true)
       setProjectsError(null)
-
-      const { data, error } = await client
-        .from('projects')
-        .select('id, name, process_id, current_step_id, status, created_at')
-        .order('created_at', { ascending: false })
+      const { data, error } = await client.rpc('get_project_overview')
 
       if (isCancelled) {
         return
@@ -404,75 +419,91 @@ function App() {
 
       if (error) {
         // eslint-disable-next-line no-console
-        console.error('Failed to load projects', error)
+        console.error('Failed to load projects via overview', error)
         setProjects([])
         setProjectSteps([])
+        setProjectComments([])
         setProjectsError('Failed to load projects')
         setIsLoadingProjects(false)
         return
       }
 
-      const rows = data ?? []
-      setProjects(rows)
-      setProjectsError(null)
+      const items = (data ?? []) as Array<
+        Partial<{
+          project: Project
+          steps: Array<
+            Partial<{
+              id: string
+              process_id: string
+              title: string
+              order_index: number
+              description: string | null
+              duration_days: number | null
+            }>
+          >
+          comments: Array<
+            Partial<{
+              id: string
+              project_id: string
+              step_id: string
+              body: string
+              created_at: string
+              created_by: string | null
+            }>
+          >
+        }>
+      >
 
-      if (rows.length === 0) {
+      if (items.length === 0) {
+        setProjects([])
         setProjectSteps([])
         setProjectComments([])
         setIsLoadingProjects(false)
         return
       }
 
-      const processIds = Array.from(new Set(rows.map((project) => project.process_id)))
+      const nextProjects: Project[] = []
+      const nextSteps: ProjectStepSummary[] = []
+      const nextComments: ProjectStepComment[] = []
 
-      const { data: stepsData, error: stepsError } = await client
-        .from('process_steps')
-        .select('id, process_id, title, order_index, description, duration_days')
-        .in('process_id', processIds)
-        .order('order_index', { ascending: true })
+      for (const item of items) {
+        if (item.project) {
+          nextProjects.push(item.project)
+        }
 
-      if (isCancelled) {
-        return
+        if (Array.isArray(item.steps)) {
+          for (const step of item.steps) {
+            if (!step || !step.id || !step.process_id || !step.title) continue
+            nextSteps.push({
+              id: step.id,
+              process_id: step.process_id,
+              title: step.title,
+              order_index: step.order_index ?? 0,
+              description: (step as { description?: string | null }).description ?? null,
+              duration_days: (step as { duration_days?: number | null }).duration_days ?? null,
+            })
+          }
+        }
+
+        if (Array.isArray(item.comments)) {
+          for (const comment of item.comments) {
+            if (!comment || !comment.id || !comment.project_id || !comment.step_id) continue
+            nextComments.push({
+              id: comment.id,
+              project_id: comment.project_id,
+              step_id: comment.step_id,
+              body: comment.body ?? '',
+              created_at: comment.created_at ?? new Date().toISOString(),
+              created_by: (comment as { created_by?: string | null }).created_by ?? null,
+            })
+          }
+        }
       }
 
-      if (stepsError) {
-        // eslint-disable-next-line no-console
-        console.error('Failed to load project steps', stepsError)
-        setProjectSteps([])
-      } else {
-        const summaries: ProjectStepSummary[] = (stepsData ?? []).map((step) => ({
-          id: step.id,
-          process_id: step.process_id,
-          title: step.title,
-          order_index: step.order_index,
-          description: (step as { description?: string | null }).description ?? null,
-          duration_days: (step as { duration_days?: number | null }).duration_days ?? null,
-        }))
-        setProjectSteps(summaries)
-      }
-
-      const projectIds = rows.map((project) => project.id)
-
-      const { data: commentsData, error: commentsError } = await client
-        .from('project_step_comments')
-        .select('id, project_id, step_id, body, created_at, created_by')
-        .in('project_id', projectIds)
-        .order('created_at', { ascending: false })
-
-      if (isCancelled) {
-        return
-      }
-
-      if (commentsError) {
-        // eslint-disable-next-line no-console
-        console.error('Failed to load project step comments', commentsError)
-        setProjectComments([])
-        setProjectCommentsError('Failed to load project step comments')
-      } else {
-        setProjectComments(commentsData ?? [])
-        setProjectCommentsError(null)
-      }
-
+      setProjects(nextProjects)
+      setProjectSteps(nextSteps)
+      setProjectComments(nextComments)
+      setProjectCommentsError(null)
       setIsLoadingProjects(false)
     }
 
@@ -524,6 +555,7 @@ function App() {
           setSteps(stepsResult.data ?? [])
           setTransitions(transitionsResult.data ?? [])
           setFlowError(null)
+          setFlowVersion((value) => value + 1)
         }
         setIsLoadingFlow(false)
       }
@@ -535,6 +567,23 @@ function App() {
       isCancelled = true
     }
   }, [selectedProcessId])
+
+  useEffect(() => {
+    // When the selected process or its steps change, ensure we don't keep
+    // a step selected that doesn't belong to the current process. We do NOT
+    // auto-select any step by default.
+    if (!selectedProcessId || steps.length === 0) {
+      if (selectedStepId !== null) {
+        setSelectedStepId(null)
+      }
+      return
+    }
+
+    const hasSelectedInCurrent = steps.some((step) => step.id === selectedStepId)
+    if (!hasSelectedInCurrent && selectedStepId !== null) {
+      setSelectedStepId(null)
+    }
+  }, [selectedProcessId, steps, selectedStepId])
 
   useEffect(() => {
     if (activePage !== 'settings') return
@@ -2272,6 +2321,11 @@ function App() {
                   }}
                   onPaneClick={() => setSelectedStepId(null)}
                 >
+                  <FitViewOnInit
+                    nodeCount={nodes.length}
+                    selectedProcessId={selectedProcessId}
+                    flowVersion={flowVersion}
+                  />
                   <Background color={isWhiteMode ? '#e5e7eb' : '#111827'} gap={24} />
                   <Controls position="bottom-right" />
                 </ReactFlow>
