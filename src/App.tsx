@@ -21,6 +21,8 @@ type Comment = {
   project_id?: string | null
   body: string
   status: 'open' | 'resolved'
+  created_by?: string | null
+  context?: { author_first_name?: string | null } | null
 }
 
 type Process = {
@@ -77,8 +79,19 @@ type ProjectStepComment = {
   created_by: string | null
 }
 
+type ProjectInvoice = {
+  id: string
+  project_id: string
+  amount: number
+  description: string | null
+  created_at: string
+  invoice_number: string | null
+  direction: 'paid' | 'received'
+}
+
 const ADMIN_EMAIL = 'captain-pavlos@outlook.com'
 const DEFAULT_PROCESS_SLUG = 'renovation'
+const PROJECT_FILES_BUCKET = 'project-files'
 
 const ROLE_COLORS: Record<string, { border: string; background: string; badge: string }> = {
   Client: {
@@ -125,6 +138,19 @@ function getRoleBadgeClasses(role: string | null): string {
   return 'border-slate-400 bg-slate-100 text-slate-800'
 }
 
+function addBusinessDays(start: Date, days: number): Date {
+  const d = new Date(start)
+  let added = 0
+  while (added < days) {
+    d.setDate(d.getDate() + 1)
+    const day = d.getDay()
+    if (day !== 0 && day !== 6) {
+      added++
+    }
+  }
+  return d
+}
+
 function FitViewOnInit(props: {
   nodeCount: number
   selectedProcessId: string | null
@@ -145,6 +171,7 @@ function FitViewOnInit(props: {
 }
 
 function App() {
+  const [isDesktop, setIsDesktop] = useState(true)
   const [user, setUser] = useState<User | null>(null)
   const [authMessage, setAuthMessage] = useState<string | null>(null)
   const [loginEmail, setLoginEmail] = useState('')
@@ -199,6 +226,8 @@ function App() {
   const [isSubmittingProjectCommentKey, setIsSubmittingProjectCommentKey] = useState<string | null>(null)
   const [projectCommentsError, setProjectCommentsError] = useState<string | null>(null)
 
+  const [authorFirstNames, setAuthorFirstNames] = useState<Record<string, string>>({})
+
   const [activePage, setActivePage] = useState<'workflow' | 'projects' | 'wiki' | 'settings'>(
     'workflow',
   )
@@ -230,7 +259,24 @@ function App() {
   const [deletingProjectCommentId, setDeletingProjectCommentId] = useState<string | null>(null)
   const [expandedProjectHistoryId, setExpandedProjectHistoryId] = useState<string | null>(null)
   const [isDeletingProjectId, setIsDeletingProjectId] = useState<string | null>(null)
-
+  const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false)
+  const [isProjectModalOpen, setIsProjectModalOpen] = useState(false)
+  const [selectedProjectForModal, setSelectedProjectForModal] = useState<Project | null>(null)
+  const [isLegendExpanded, setIsLegendExpanded] = useState(false)
+  const [isProjectHistoryOpen, setIsProjectHistoryOpen] = useState(false)
+  const [projectFiles, setProjectFiles] = useState<Record<string, { name: string; path: string; size: number; url: string }[]>>({})
+  const [isUploadingFilesProjectId, setIsUploadingFilesProjectId] = useState<string | null>(null)
+  const [filesError, setFilesError] = useState<string | null>(null)
+  const [invoicesByProject, setInvoicesByProject] = useState<Record<string, ProjectInvoice[]>>({})
+  const [isAddingInvoiceProjectId, setIsAddingInvoiceProjectId] = useState<string | null>(null)
+  const [invoicesError, setInvoicesError] = useState<string | null>(null)
+  const [newInvoiceAmountByProject, setNewInvoiceAmountByProject] = useState<Record<string, string>>({})
+  const [newInvoiceDescByProject, setNewInvoiceDescByProject] = useState<Record<string, string>>({})
+  const [newInvoiceNumberByProject, setNewInvoiceNumberByProject] = useState<Record<string, string>>({})
+  const [newInvoiceDirectionByProject, setNewInvoiceDirectionByProject] = useState<Record<string, 'paid' | 'received'>>({})
+  const [isDeletingInvoiceId, setIsDeletingInvoiceId] = useState<string | null>(null)
+  const [isDeletingFilePath, setIsDeletingFilePath] = useState<string | null>(null)
+  const [isChangingProjectStep, setIsChangingProjectStep] = useState(false)
   const [profileFirstName, setProfileFirstName] = useState('')
   const [profileLastName, setProfileLastName] = useState('')
   const [profileRole, setProfileRole] = useState('')
@@ -282,6 +328,30 @@ function App() {
 
   const isAdmin = user?.email === ADMIN_EMAIL
 
+  // Modal polish: body scroll lock and Escape to close
+  useEffect(() => {
+    const anyOpen = isNewProjectModalOpen || isProjectModalOpen
+    const prev = document.body.style.overflow
+    if (anyOpen) {
+      document.body.style.overflow = 'hidden'
+    }
+    return () => {
+      document.body.style.overflow = prev
+    }
+  }, [isNewProjectModalOpen, isProjectModalOpen])
+
+  useEffect(() => {
+    if (!isNewProjectModalOpen && !isProjectModalOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (isProjectModalOpen) setIsProjectModalOpen(false)
+        if (isNewProjectModalOpen) setIsNewProjectModalOpen(false)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isNewProjectModalOpen, isProjectModalOpen])
+
   useEffect(() => {
     const client = supabase
     if (!client) return
@@ -292,6 +362,24 @@ function App() {
       } = await client.auth.getUser()
       setUser(currentUser)
     })()
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const checkDesktop = () => {
+      setIsDesktop(window.innerWidth >= 1024)
+    }
+
+    checkDesktop()
+
+    const mediaQuery = window.matchMedia('(min-width: 1024px)')
+    const handleChange = (e: MediaQueryListEvent) => setIsDesktop(e.matches)
+    mediaQuery.addEventListener('change', handleChange)
+
+    return () => {
+      mediaQuery.removeEventListener('change', handleChange)
+    }
   }, [])
 
   useEffect(() => {
@@ -334,7 +422,7 @@ function App() {
 
       if (!isCancelled) {
         if (error) {
-          // eslint-disable-next-line no-console
+           
           console.error('Failed to load processes', error)
           setProcessError('Failed to load processes')
         } else {
@@ -380,7 +468,7 @@ function App() {
 
       if (!isCancelled) {
         if (error) {
-          // eslint-disable-next-line no-console
+           
           console.error('Failed to load wiki', error)
           setWikiError('Failed to load wiki')
         } else if (data) {
@@ -418,7 +506,7 @@ function App() {
       }
 
       if (error) {
-        // eslint-disable-next-line no-console
+         
         console.error('Failed to load projects via overview', error)
         setProjects([])
         setProjectSteps([])
@@ -465,6 +553,7 @@ function App() {
       const nextProjects: Project[] = []
       const nextSteps: ProjectStepSummary[] = []
       const nextComments: ProjectStepComment[] = []
+      const seenProcessIds = new Set<string>()
 
       for (const item of items) {
         if (item.project) {
@@ -472,16 +561,24 @@ function App() {
         }
 
         if (Array.isArray(item.steps)) {
-          for (const step of item.steps) {
-            if (!step || !step.id || !step.process_id || !step.title) continue
-            nextSteps.push({
-              id: step.id,
-              process_id: step.process_id,
-              title: step.title,
-              order_index: step.order_index ?? 0,
-              description: (step as { description?: string | null }).description ?? null,
-              duration_days: (step as { duration_days?: number | null }).duration_days ?? null,
-            })
+          const processIdFromProject = item.project?.process_id ?? null
+          const processId =
+            processIdFromProject || (item.steps[0]?.process_id as string | undefined) || null
+
+          if (processId && !seenProcessIds.has(processId)) {
+            seenProcessIds.add(processId)
+
+            for (const step of item.steps) {
+              if (!step || !step.id || !step.title) continue
+              nextSteps.push({
+                id: step.id,
+                process_id: processId,
+                title: step.title,
+                order_index: step.order_index ?? 0,
+                description: (step as { description?: string | null }).description ?? null,
+                duration_days: (step as { duration_days?: number | null }).duration_days ?? null,
+              })
+            }
           }
         }
 
@@ -543,11 +640,11 @@ function App() {
       if (!isCancelled) {
         if (stepsResult.error || transitionsResult.error) {
           if (stepsResult.error) {
-            // eslint-disable-next-line no-console
+             
             console.error('Failed to load steps', stepsResult.error)
           }
           if (transitionsResult.error) {
-            // eslint-disable-next-line no-console
+             
             console.error('Failed to load transitions', transitionsResult.error)
           }
           setFlowError('Failed to load process flow')
@@ -573,15 +670,7 @@ function App() {
     // a step selected that doesn't belong to the current process. We do NOT
     // auto-select any step by default.
     if (!selectedProcessId || steps.length === 0) {
-      if (selectedStepId !== null) {
-        setSelectedStepId(null)
-      }
       return
-    }
-
-    const hasSelectedInCurrent = steps.some((step) => step.id === selectedStepId)
-    if (!hasSelectedInCurrent && selectedStepId !== null) {
-      setSelectedStepId(null)
     }
   }, [selectedProcessId, steps, selectedStepId])
 
@@ -609,7 +698,7 @@ function App() {
       if (isCancelled) return
 
       if (error) {
-        // eslint-disable-next-line no-console
+         
         console.error('Failed to load profile', error)
         setProfileError('Failed to load profile')
       } else if (data) {
@@ -636,8 +725,6 @@ function App() {
     }
   }, [activePage, user])
 
-  
-
   useEffect(() => {
     const client = supabase
     if (!client) return
@@ -648,13 +735,13 @@ function App() {
       setIsLoadingComments(true)
       const { data, error } = await client
         .from('comments')
-        .select('id, created_at, process_id, step_id, body, status')
+        .select('id, created_at, process_id, step_id, body, status, context')
         .eq('process_id', selectedProcessSlug ?? DEFAULT_PROCESS_SLUG)
         .order('created_at', { ascending: false })
 
       if (!isCancelled) {
         if (error) {
-          // eslint-disable-next-line no-console
+           
           console.error('Failed to load comments', error)
           setCommentError('Failed to load comments')
         } else {
@@ -671,6 +758,54 @@ function App() {
       isCancelled = true
     }
   }, [selectedProcessSlug])
+
+  useEffect(() => {
+    const client = supabase
+    if (!client) return
+
+    const ids = new Set<string>()
+    for (const comment of projectComments) {
+      if (comment.created_by) {
+        ids.add(comment.created_by)
+      }
+    }
+
+    if (ids.size === 0) {
+      return
+    }
+
+    let isCancelled = false
+
+    const loadAuthors = async () => {
+      const { data, error } = await client
+        .from('profiles')
+        .select('id, full_name')
+        .in('id', Array.from(ids))
+
+      if (isCancelled || error || !data) {
+        return
+      }
+
+      const next: Record<string, string> = {}
+      for (const row of data as Array<{ id: string; full_name: string | null }>) {
+        const fullName = row.full_name ?? ''
+        const [first = ''] = fullName.split(' ')
+        if (first) {
+          next[row.id] = first
+        }
+      }
+
+      if (!isCancelled && Object.keys(next).length > 0) {
+        setAuthorFirstNames((prev) => ({ ...prev, ...next }))
+      }
+    }
+
+    void loadAuthors()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [projectComments])
 
   const handleSubmitComment = async (event: FormEvent) => {
     event.preventDefault()
@@ -695,13 +830,22 @@ function App() {
         context: {
           path: window.location.pathname,
           userAgent: window.navigator.userAgent,
+          author_first_name: (() => {
+            const preferred = profileFirstName.trim()
+            if (preferred) return preferred
+            if (!user?.email) return null
+            const localPart = user.email.split('@')[0] ?? ''
+            const token = localPart.split(/[._\s-]+/)[0] || localPart
+            if (!token) return null
+            return token.charAt(0).toUpperCase() + token.slice(1)
+          })(),
         },
       })
-      .select('id, created_at, process_id, step_id, body, status')
+      .select('id, created_at, process_id, step_id, body, status, context')
       .single()
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to post comment', error)
       setCommentError('Failed to post comment')
     } else if (data) {
@@ -744,19 +888,17 @@ function App() {
 
     const { data, error } = await supabase
       .from('profiles')
-      .upsert(
-        {
-          id: user.id,
-          full_name: `${firstName} ${lastName}`.trim() || null,
-          role: role || null,
-        },
-        { onConflict: 'id' },
-      )
+      .upsert({
+        id: user.id,
+        email: user.email,
+        full_name: `${firstName} ${lastName}`.trim() || null,
+        role: role || null,
+      })
       .select('full_name, role')
       .single()
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to save profile', error)
       const err = error as { message?: string; details?: string }
       setProfileError(err.message || err.details || 'Failed to save profile')
@@ -801,7 +943,7 @@ function App() {
       .single()
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to save wiki', error)
       setWikiError('Failed to save wiki')
     } else if (data) {
@@ -841,13 +983,14 @@ function App() {
       .single()
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to create project', error)
       setProjectFormError('Failed to create project')
     } else if (data) {
       setProjects((prev) => [data, ...prev])
       setNewProjectName('')
       setNewProjectProcessId('')
+      setIsNewProjectModalOpen(false)
     }
 
     setIsCreatingProject(false)
@@ -861,22 +1004,27 @@ function App() {
       return
     }
 
-    const { data, error } = await supabase
-      .from('projects')
-      .update({ current_step_id: stepId })
-      .eq('id', projectId)
-      .select('id, name, process_id, current_step_id, status, created_at')
-      .single()
+    setIsChangingProjectStep(true)
+    let data: Project | null = null
+    try {
+      const resp = await supabase
+        .from('projects')
+        .update({ current_step_id: stepId })
+        .eq('id', projectId)
+        .select('id, name, process_id, current_step_id, status, created_at')
+        .single()
 
-    if (error) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to update project step', error)
-      setProjectsError('Failed to update project step')
-      return
+      if (resp.error) {
+        console.error('Failed to update project step', resp.error)
+        setProjectsError('Failed to update project step')
+        return
+      }
+      data = resp.data as Project
+      setProjects((prev) => prev.map((project) => (project.id === projectId ? (data as Project) : project)))
+      setProjectsError(null)
+    } finally {
+      setIsChangingProjectStep(false)
     }
-
-    setProjects((prev) => prev.map((project) => (project.id === projectId ? data : project)))
-    setProjectsError(null)
   }
 
   const handleSubmitProjectStepComment = async (
@@ -914,7 +1062,7 @@ function App() {
       .single()
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to post project step comment', error)
       setProjectCommentsError('Failed to post project step comment')
     } else if (data) {
@@ -942,7 +1090,7 @@ function App() {
       .eq('id', commentId)
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to delete project step comment', error)
       setProjectCommentsError('Failed to delete project step comment')
     } else {
@@ -970,7 +1118,7 @@ function App() {
       .eq('id', projectId)
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to delete project', error)
       setProjectsError('Failed to delete project')
     } else {
@@ -990,9 +1138,155 @@ function App() {
     setEditingProjectName(project.name)
   }
 
+  const handleOpenProjectModal = (project: Project) => {
+    if (!user) return
+    setSelectedProjectForModal(project)
+    setIsProjectModalOpen(true)
+    void loadProjectFiles(project.id)
+    void loadProjectInvoices(project.id)
+  }
+
+  const handleCloseProjectModal = () => {
+    setIsProjectModalOpen(false)
+    setSelectedProjectForModal(null)
+  }
+
   const handleCancelEditProjectName = () => {
     setEditingProjectId(null)
     setEditingProjectName('')
+  }
+
+  const loadProjectFiles = async (projectId: string) => {
+    if (!supabase) return
+    setFilesError(null)
+    try {
+      const prefix = `projects/${projectId}`
+      const { data, error } = await supabase.storage.from(PROJECT_FILES_BUCKET).list(prefix, {
+        limit: 100,
+        offset: 0,
+        sortBy: { column: 'updated_at', order: 'desc' },
+      })
+      if (error) {
+        setFilesError('Failed to list files')
+        return
+      }
+      const files = data ?? []
+      const withUrls: { name: string; path: string; size: number; url: string }[] = []
+      for (const f of files) {
+        if (f.name === '.emptyFolderPlaceholder') continue
+        const path = `${prefix}/${f.name}`
+        const { data: urlData } = await supabase.storage
+          .from(PROJECT_FILES_BUCKET)
+          .createSignedUrl(path, 60 * 60)
+        const fileObj = f as { metadata?: { size?: number }; size?: number }
+        const metaSize = fileObj.metadata?.size
+        const size = typeof metaSize === 'number' ? metaSize : (typeof fileObj.size === 'number' ? fileObj.size : 0)
+        withUrls.push({ name: f.name, path, size, url: urlData?.signedUrl ?? '#' })
+      }
+      setProjectFiles((prev) => ({ ...prev, [projectId]: withUrls }))
+    } catch {
+      setFilesError('Failed to list files')
+    }
+  }
+
+  const handleUploadProjectFiles = async (projectId: string, files: FileList | null) => {
+    if (!supabase || !files || files.length === 0) return
+    setIsUploadingFilesProjectId(projectId)
+    setFilesError(null)
+    try {
+      for (const file of Array.from(files)) {
+        const path = `projects/${projectId}/${Date.now()}-${file.name}`
+        const { error } = await supabase.storage.from(PROJECT_FILES_BUCKET).upload(path, file, {
+          upsert: true,
+        })
+        if (error) {
+          setFilesError('Failed to upload one or more files')
+          break
+        }
+      }
+      await loadProjectFiles(projectId)
+    } finally {
+      setIsUploadingFilesProjectId(null)
+    }
+  }
+
+  const loadProjectInvoices = async (projectId: string) => {
+    if (!supabase) return
+    setInvoicesError(null)
+    const { data, error } = await supabase
+      .from('project_invoices')
+      .select('id, project_id, amount, description, created_at, invoice_number, direction')
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: false })
+    if (error) {
+      setInvoicesError('Failed to load invoices')
+      return
+    }
+    setInvoicesByProject((prev) => ({ ...prev, [projectId]: (data as ProjectInvoice[]) ?? [] }))
+  }
+
+  const handleAddInvoice = async (event: FormEvent, projectId: string) => {
+    event.preventDefault()
+    if (!supabase) return
+    const amountStr = newInvoiceAmountByProject[projectId] ?? ''
+    const description = (newInvoiceDescByProject[projectId] ?? '').trim()
+    const invoice_number = (newInvoiceNumberByProject[projectId] ?? '').trim()
+    const direction = (newInvoiceDirectionByProject[projectId] ?? 'paid') as 'paid' | 'received'
+    const amount = Number(amountStr)
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setInvoicesError('Please enter a valid positive amount')
+      return
+    }
+    setIsAddingInvoiceProjectId(projectId)
+    setInvoicesError(null)
+    const { data, error } = await supabase
+      .from('project_invoices')
+      .insert({ project_id: projectId, amount, description, invoice_number, direction })
+      .select('id, project_id, amount, description, created_at, invoice_number, direction')
+      .single()
+    if (error) {
+      setInvoicesError('Failed to add invoice')
+    } else if (data) {
+      setInvoicesByProject((prev) => ({
+        ...prev,
+        [projectId]: [data as ProjectInvoice, ...(prev[projectId] ?? [])],
+      }))
+      setNewInvoiceAmountByProject((prev) => ({ ...prev, [projectId]: '' }))
+      setNewInvoiceDescByProject((prev) => ({ ...prev, [projectId]: '' }))
+      setNewInvoiceNumberByProject((prev) => ({ ...prev, [projectId]: '' }))
+      setNewInvoiceDirectionByProject((prev) => ({ ...prev, [projectId]: 'paid' }))
+      setInvoicesError(null)
+    }
+    setIsAddingInvoiceProjectId(null)
+  }
+
+  const handleDeleteInvoice = async (invoiceId: string, projectId: string) => {
+    if (!supabase) return
+    setIsDeletingInvoiceId(invoiceId)
+    setInvoicesError(null)
+    const { error } = await supabase.from('project_invoices').delete().eq('id', invoiceId)
+    if (error) {
+      setInvoicesError('Failed to delete invoice')
+    } else {
+      setInvoicesByProject((prev) => ({
+        ...prev,
+        [projectId]: (prev[projectId] ?? []).filter((inv) => inv.id !== invoiceId),
+      }))
+    }
+    setIsDeletingInvoiceId(null)
+  }
+
+  const handleDeleteProjectFile = async (projectId: string, path: string) => {
+    if (!supabase) return
+    setIsDeletingFilePath(path)
+    setFilesError(null)
+    const { error } = await supabase.storage.from(PROJECT_FILES_BUCKET).remove([path])
+    if (error) {
+      setFilesError('Failed to delete file')
+    } else {
+      await loadProjectFiles(projectId)
+    }
+    setIsDeletingFilePath(null)
   }
 
   const handleSaveProjectName = async (event: FormEvent, projectId: string) => {
@@ -1018,7 +1312,7 @@ function App() {
       .single()
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to update project name', error)
       setProjectsError('Failed to update project name')
     } else if (data) {
@@ -1042,7 +1336,7 @@ function App() {
       .single()
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to resolve comment', error)
       setCommentError('Failed to resolve comment')
     } else if (data) {
@@ -1059,7 +1353,7 @@ function App() {
     const { error } = await supabase.from('comments').delete().eq('id', id)
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to delete comment', error)
       setCommentError('Failed to delete comment')
       return
@@ -1088,7 +1382,7 @@ function App() {
     })
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to log in', error)
       setAuthMessage('Login failed. Check email and password.')
     } else if (data.user) {
@@ -1193,7 +1487,7 @@ function App() {
       .single()
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to create process', error)
       setProcessFormError('Failed to create process')
     } else if (data) {
@@ -1232,7 +1526,7 @@ function App() {
       .single()
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to update process', error)
       setProcessUpdateError('Failed to update process')
     } else if (data) {
@@ -1258,7 +1552,7 @@ function App() {
     const { error } = await supabase.from('processes').delete().eq('id', processId)
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to delete process', error)
       setProcessFormError('Failed to delete process')
       return
@@ -1361,7 +1655,7 @@ function App() {
           return
         }
 
-        // eslint-disable-next-line no-console
+         
         console.error('insert_process_step_with_shift RPC failed, falling back', rpcError)
       } else if (rpcResult) {
         createdStep = Array.isArray(rpcResult)
@@ -1369,7 +1663,7 @@ function App() {
           : (rpcResult as ProcessStep)
       }
     } catch (rpcUnexpectedError) {
-      // eslint-disable-next-line no-console
+       
       console.error('Unexpected RPC error during step creation, falling back', rpcUnexpectedError)
     }
 
@@ -1418,7 +1712,7 @@ function App() {
         .single()
 
       if (error) {
-        // eslint-disable-next-line no-console
+         
         console.error('Failed to create step', error)
         setStepFormError('Failed to create step')
         setIsCreatingStep(false)
@@ -1508,7 +1802,7 @@ function App() {
       .single()
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to update step', error)
       setStepFormError('Failed to update step')
     } else if (data) {
@@ -1537,7 +1831,7 @@ function App() {
       .single()
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to create transition from connect', error)
       setTransitionFormError('Failed to create connection between steps')
     } else if (data) {
@@ -1556,7 +1850,7 @@ function App() {
       .eq('id', transitionId)
 
     if (error) {
-      // eslint-disable-next-line no-console
+       
       console.error('Failed to delete connection', error)
       setTransitionFormError('Failed to delete connection between steps')
       return
@@ -1565,6 +1859,17 @@ function App() {
     setTransitions((prev) => prev.filter((transition) => transition.id !== transitionId))
     setTransitionFormError(null)
   }
+
+  const visibleComments = useMemo(() => {
+    if (!selectedStepId) return []
+    return comments.filter((comment) => comment.step_id === selectedStepId)
+  }, [comments, selectedStepId])
+
+  const openCommentStepIds = useMemo(() => new Set(
+    comments
+      .filter((comment) => comment.status === 'open' && comment.step_id)
+      .map((comment) => comment.step_id as string),
+  ), [comments])
 
   const { nodes, edges } = useMemo(() => {
     if (steps.length === 0) {
@@ -1590,12 +1895,6 @@ function App() {
     // Vertical layout: order_index controls Y (downwards), lane controls X (left→right)
     const xGap = 260
     const yGap = 140
-
-    const openCommentStepIds = new Set(
-      comments
-        .filter((comment) => comment.status === 'open' && comment.step_id)
-        .map((comment) => comment.step_id as string),
-    )
 
     const dynamicNodes: Node[] = steps.map((step) => {
       const laneKey = getLaneKey(step)
@@ -1652,7 +1951,7 @@ function App() {
     }))
 
     return { nodes: dynamicNodes, edges: dynamicEdges }
-  }, [steps, transitions, comments, selectedStepId, isWhiteMode])
+  }, [steps, transitions, openCommentStepIds, selectedStepId, isWhiteMode])
 
   const selectedStep = useMemo(
     () => steps.find((step) => step.id === selectedStepId) ?? null,
@@ -1684,11 +1983,6 @@ function App() {
     [customRoles],
   )
 
-  const visibleComments = useMemo(() => {
-    if (!selectedStepId) return []
-    return comments.filter((comment) => comment.step_id === selectedStepId)
-  }, [comments, selectedStepId])
-
   const stepsByRole = useMemo(() => {
     const groups = new Map<string, ProcessStep[]>()
     steps.forEach((step) => {
@@ -1709,6 +2003,44 @@ function App() {
     window.print()
   }
 
+  // Desktop-only check
+  if (!isDesktop) {
+    return (
+      <div className={`min-h-screen flex items-center justify-center text-sm ${
+        isWhiteMode ? 'bg-slate-50 text-slate-900' : 'text-slate-100'
+      }`}>
+        <div className="max-w-md mx-auto text-center px-6">
+          <div className={`flex h-16 w-16 items-center justify-center rounded-full border shadow-soft-elevated mx-auto mb-6 ${
+            isWhiteMode
+              ? 'border-amber-600 bg-gradient-to-br from-amber-50 to-amber-100'
+              : 'border-nest-gold/60 bg-gradient-to-br from-nest-green-dark to-black'
+          }`}>
+            <span className="text-lg font-semibold tracking-[0.15em] text-nest-gold">
+              NL
+            </span>
+          </div>
+          <h1 className={`text-2xl font-bold mb-4 ${
+            isWhiteMode ? 'text-slate-900' : 'text-slate-50'
+          }`}>
+            Desktop Only
+          </h1>
+          <p className={`text-base mb-6 ${
+            isWhiteMode ? 'text-slate-600' : 'text-slate-400'
+          }`}>
+            Unfortunately, the Nestland Command Center is only available on desktop devices. 
+            Please switch to a desktop or laptop computer to access the workflow management system.
+          </p>
+          <div className={`text-sm ${
+            isWhiteMode ? 'text-slate-500' : 'text-slate-500'
+          }`}>
+            <p>Minimum screen width: 1024px</p>
+            <p className="mt-2">Recommended browsers: Chrome, Firefox, Safari, or Edge</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div
       className={`min-h-screen flex flex-col text-sm ${
@@ -1720,9 +2052,9 @@ function App() {
           ? 'border-slate-200 bg-gradient-to-r from-white via-slate-50 to-slate-100'
           : 'border-white/5 bg-gradient-to-r from-nest-bg/80 via-black/80 to-nest-green-dark/40'
       }`}>
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-3 py-4 sm:px-6">
           <div className="flex items-center gap-3">
-            <div className={`flex h-9 w-9 items-center justify-center rounded-full border shadow-soft-elevated ${
+            <div className={`hidden lg:flex h-9 w-9 items-center justify-center rounded-full border shadow-soft-elevated ${
               isWhiteMode
                 ? 'border-amber-600 bg-gradient-to-br from-amber-50 to-amber-100'
                 : 'border-nest-gold/60 bg-gradient-to-br from-nest-green-dark to-black'
@@ -1742,7 +2074,7 @@ function App() {
                   Internal
                 </span>
               </div>
-              <p className={`mt-0.5 text-[11px] ${
+              <p className={`mt-0.5 hidden text-[11px] sm:block ${
                 isWhiteMode ? 'text-slate-600' : 'text-slate-400'
               }`}>
                 Live process maps, anonymous collaboration, single source of truth.
@@ -1753,7 +2085,7 @@ function App() {
             <div className="flex items-center gap-2">
               {user ? (
                 <>
-                  <span className={`hidden text-[10px] sm:inline ${
+                  <span className={`hidden text-[10px] lg:inline ${
                     isWhiteMode ? 'text-slate-600' : 'text-slate-400'
                   }`}>
                     Signed in as {user.email}
@@ -1796,6 +2128,7 @@ function App() {
                     }`}
                     placeholder="Password"
                     type="password"
+                    autoComplete="current-password"
                     value={loginPassword}
                     onChange={(event) => setLoginPassword(event.target.value)}
                   />
@@ -1953,7 +2286,7 @@ function App() {
       )}
 
       {activePage === 'workflow' ? (
-        <main className="mx-auto flex w-full max-w-7xl flex-1 gap-4 px-6 pb-6 pt-4">
+        <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-4 px-4 pb-4 pt-3 sm:px-6 sm:pb-6 sm:pt-4 lg:flex-row">
           {/* Process list */}
           <aside
             className={`hidden shrink-0 flex-col rounded-2xl border md:flex ${
@@ -2250,6 +2583,37 @@ function App() {
               </span>
             </div>
             <div className="flex items-center gap-2">
+              {/* Mobile process selector */}
+              <div className="md:hidden">
+                <label className="sr-only" htmlFor="mobile-process-select">
+                  Select process
+                </label>
+                <select
+                  id="mobile-process-select"
+                  className={`rounded-full border px-2.5 py-1 text-[10px] focus:outline-none focus:ring-1 focus:ring-nest-gold/60 ${
+                    isWhiteMode
+                      ? 'border-slate-300 bg-white text-slate-800 shadow-sm'
+                      : 'border-white/10 bg-black/60 text-slate-100'
+                  }`}
+                  value={selectedProcessId ?? ''}
+                  onChange={(event) => {
+                    const id = event.target.value
+                    if (!id) return
+                    const proc = processes.find((p) => p.id === id)
+                    if (!proc) return
+                    handleSelectProcess(proc.slug, proc.id)
+                  }}
+                >
+                  <option value="" disabled>
+                    Choose process
+                  </option>
+                  {processes.map((proc) => (
+                    <option key={proc.id} value={proc.id}>
+                      {proc.name || proc.slug}
+                    </option>
+                  ))}
+                </select>
+              </div>
               {flowError && <span className="text-[10px] text-red-400">{flowError}</span>}
               <button
                 type="button"
@@ -2299,43 +2663,58 @@ function App() {
           >
             {viewMode === 'workflow' ? (
               <ReactFlowProvider>
-                {selectedProcessId && nodes.length > 0 ? (
-                  <ReactFlow
-                    key={`${selectedProcessId ?? 'none'}:${flowVersion}`}
-                    nodes={nodes}
-                    edges={edges}
-                    fitView
-                    style={{ width: '100%', height: '100%' }}
-                    proOptions={{ hideAttribution: true }}
-                    panOnScroll
-                    zoomOnScroll
-                    zoomOnPinch
-                    panOnDrag
-                    selectionOnDrag={false}
-                    nodesDraggable={false}
-                    onConnect={handleConnect}
-                    onNodeClick={(_, node) => handleSelectStep(node.id)}
-                    onEdgeClick={(_, edge) => {
-                      if (!isAdmin) return
-                      if (window.confirm('Delete this connection between steps?')) {
-                        void handleDeleteTransition(edge.id)
-                      }
-                    }}
-                    onPaneClick={() => setSelectedStepId(null)}
-                  >
-                    <FitViewOnInit
-                      nodeCount={nodes.length}
-                      selectedProcessId={selectedProcessId}
-                      flowVersion={flowVersion}
-                    />
-                    <Background color={isWhiteMode ? '#e5e7eb' : '#111827'} gap={24} />
-                    <Controls position="bottom-right" />
-                  </ReactFlow>
-                ) : (
-                  <div className="flex h-full items-center justify-center text-[11px] text-slate-500">
-                    {isLoadingFlow ? 'Loading workflow...' : 'No steps defined yet.'}
-                  </div>
-                )}
+                <div className="relative h-full w-full">
+                  {isLoadingFlow && (
+                    <div className="pointer-events-none absolute inset-0 flex items-start justify-center pt-4">
+                      <div
+                        className={`rounded-full px-3 py-1 text-[10px] font-medium shadow ${
+                          isWhiteMode
+                            ? 'bg-white/95 text-slate-800 border border-slate-300'
+                            : 'bg-black/80 text-slate-100 border border-white/10'
+                        }`}
+                      >
+                        Loading workflow…
+                      </div>
+                    </div>
+                  )}
+                  {selectedProcessId && nodes.length > 0 ? (
+                    <ReactFlow
+                      key={`${selectedProcessId ?? 'none'}:${flowVersion}`}
+                      nodes={nodes}
+                      edges={edges}
+                      fitView
+                      style={{ width: '100%', height: '100%' }}
+                      proOptions={{ hideAttribution: true }}
+                      panOnScroll
+                      zoomOnScroll
+                      zoomOnPinch
+                      panOnDrag
+                      selectionOnDrag={false}
+                      nodesDraggable={false}
+                      onConnect={handleConnect}
+                      onNodeClick={(_, node) => handleSelectStep(node.id)}
+                      onEdgeClick={(_, edge) => {
+                        if (!isAdmin) return
+                        if (window.confirm('Delete this connection between steps?')) {
+                          void handleDeleteTransition(edge.id)
+                        }
+                      }}
+                      onPaneClick={() => setSelectedStepId(null)}
+                    >
+                      <FitViewOnInit
+                        nodeCount={nodes.length}
+                        selectedProcessId={selectedProcessId}
+                        flowVersion={flowVersion}
+                      />
+                      <Background color={isWhiteMode ? '#e5e7eb' : '#111827'} gap={24} />
+                      <Controls position="bottom-right" />
+                    </ReactFlow>
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-[11px] text-slate-500">
+                      {isLoadingFlow ? 'Loading workflow...' : 'No steps defined yet.'}
+                    </div>
+                  )}
+                </div>
               </ReactFlowProvider>
             ) : (
               <div
@@ -2625,7 +3004,7 @@ function App() {
                               .eq('process_id', selectedProcessId)
 
                             if (error) {
-                              // eslint-disable-next-line no-console
+                               
                               console.error('Failed to delete connections for process', error)
                               setTransitionFormError('Failed to delete all connections for this process')
                               setIsDeletingAllConnections(false)
@@ -2668,7 +3047,7 @@ function App() {
                               .eq('id', selectedStepId)
 
                             if (error) {
-                              // eslint-disable-next-line no-console
+                               
                               console.error('Failed to delete step', error)
                               setStepFormError('Failed to delete step')
                               return
@@ -2707,7 +3086,7 @@ function App() {
         {/* Comments & details */}
         {isCommentsSidebarVisible && (
           <aside
-            className={`hidden w-80 shrink-0 flex-col rounded-2xl border p-3 lg:flex ${
+            className={`mt-4 w-full shrink-0 flex flex-col rounded-2xl border p-3 lg:mt-0 lg:w-80 ${
               isWhiteMode ? 'border-slate-200 bg-white' : 'border-white/5 bg-nest-surface/80'
             }`}
           >
@@ -2848,7 +3227,7 @@ function App() {
                     }`}
                   >
                     <span>
-                      {(selectedProcess?.name ?? 'Workflow')} ·{' '}
+                      {(comment.context?.author_first_name?.trim() || 'Unknown')} ·{' '}
                       {comment.status === 'open' ? 'open' : 'resolved'} ·{' '}
                       {new Date(comment.created_at).toLocaleString()}
                     </span>
@@ -2911,9 +3290,9 @@ function App() {
         )}
       </main>
       ) : activePage === 'projects' ? (
-        <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-4 px-6 pb-6 pt-4">
+        <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-4 px-4 pb-4 pt-3 sm:px-6 sm:pb-6 sm:pt-4">
           <section
-            className={`flex-1 rounded-2xl border p-4 text-[11px] ${
+            className={`flex-1 rounded-2xl border p-3 text-[11px] sm:p-4 ${
               isWhiteMode
                 ? 'border-slate-200 bg-white text-slate-900'
                 : 'border-white/5 bg-nest-surface/80 text-slate-100'
@@ -2951,16 +3330,260 @@ function App() {
                   >
                     Current projects
                   </p>
-                  {isLoadingProjects && (
-                    <span className="text-[10px] text-slate-500">Loading...</span>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {isLoadingProjects && (
+                      <span className="text-[10px] text-slate-500">Loading...</span>
+                    )}
+                    {user && (
+                      <button
+                        type="button"
+                        onClick={() => setIsNewProjectModalOpen(true)}
+                        className={`rounded-full px-2 py-0.5 text-[9px] font-semibold ${
+                          isWhiteMode
+                            ? 'border border-black bg-black text-white hover:bg-slate-900'
+                            : 'border border-white/30 bg-black text-white hover:border-nest-gold/40'
+                        }`}
+                      >
+                        New Project
+                      </button>
+                    )}
+                  </div>
                 </div>
+                {(() => {
+                  const now = new Date()
+                  const msPerDay = 86400000
+                  // Add N business days (excludes Sat/Sun). Supports fractional days.
+                  const addBusinessDays = (start: Date, days: number): Date => {
+                    let date = new Date(start)
+                    const whole = Math.floor(days)
+                    const frac = days - whole
+                    let added = 0
+                    while (added < whole) {
+                      date.setDate(date.getDate() + 1)
+                      const day = date.getDay()
+                      if (day !== 0 && day !== 6) {
+                        added++
+                      }
+                    }
+                    if (frac > 0) {
+                      date = new Date(date.getTime() + frac * msPerDay)
+                      const day = date.getDay()
+                      if (day === 0) date.setDate(date.getDate() + 1)
+                      if (day === 6) date.setDate(date.getDate() + 2)
+                    }
+                    return date
+                  }
+                  const projFinishes = projects.map((p) => {
+                    const steps = projectSteps
+                      .filter((s) => s.process_id === p.process_id)
+                      .slice()
+                      .sort((a, b) => a.order_index - b.order_index)
+                    const idx = p.current_step_id ? steps.findIndex((s) => s.id === p.current_step_id) : -1
+                    const startIdx = idx >= 0 ? idx : 0
+                    const remaining = steps.slice(startIdx).reduce((sum, step) => {
+                      const val = step.duration_days ?? 0
+                      return sum + (Number.isFinite(val) ? (val as number) : 0)
+                    }, 0)
+                    const finish = addBusinessDays(now, remaining)
+                    return { id: p.id, name: p.name, process_id: p.process_id, remaining, finish }
+                  })
+                  const latestFinish = projFinishes.length
+                    ? new Date(Math.max(...projFinishes.map((x) => x.finish.getTime())))
+                    : now
+                  const endOfYear = new Date(latestFinish.getFullYear(), 11, 31, 23, 59, 59, 999)
+                  const totalMs = Math.max(1, endOfYear.getTime() - now.getTime())
+                  const monthTicks: Date[] = []
+                  let m = new Date(now.getFullYear(), now.getMonth(), 1)
+                  if (m < now) m = new Date(now.getFullYear(), now.getMonth() + 1, 1)
+                  while (m <= endOfYear) {
+                    monthTicks.push(new Date(m))
+                    m = new Date(m.getFullYear(), m.getMonth() + 1, 1)
+                  }
+                  const yearTicks: Date[] = []
+                  let y = new Date(now.getFullYear(), 0, 1)
+                  if (y < now) y = new Date(now.getFullYear() + 1, 0, 1)
+                  while (y <= endOfYear) {
+                    yearTicks.push(new Date(y))
+                    y = new Date(y.getFullYear() + 1, 0, 1)
+                  }
+                  const quarterTicks: Date[] = []
+                  let q = new Date(now.getFullYear(), now.getMonth(), 1)
+                  while ((q < now) || (q.getMonth() % 3 !== 0)) {
+                    q = new Date(q.getFullYear(), q.getMonth() + 1, 1)
+                  }
+                  while (q <= endOfYear) {
+                    quarterTicks.push(new Date(q))
+                    q = new Date(q.getFullYear(), q.getMonth() + 3, 1)
+                  }
+                  // Assign colors per process (static palette for Tailwind)
+                  const processPalette = [
+                    'bg-amber-400',
+                    'bg-sky-400',
+                    'bg-emerald-400',
+                    'bg-fuchsia-400',
+                    'bg-orange-400',
+                    'bg-blue-400',
+                    'bg-teal-400',
+                    'bg-pink-400',
+                    'bg-purple-400',
+                    'bg-lime-400',
+                  ]
+                  const processIds = Array.from(new Set(projFinishes.map((pf) => pf.process_id)))
+                  const processColorMap = new Map<string, string>()
+                  processIds.forEach((pid, i) => {
+                    processColorMap.set(pid, processPalette[i % processPalette.length])
+                  })
+
+                  const projectMarks = projFinishes
+                    .map((pf) => {
+                      const pct = ((pf.finish.getTime() - now.getTime()) / totalMs) * 100
+                      const clamped = Math.min(100, Math.max(0, pct))
+                      const color = processColorMap.get(pf.process_id) || (isWhiteMode ? 'bg-black' : 'bg-nest-gold')
+                      return { ...pf, pct: clamped, color }
+                    })
+                    .sort((a, b) => a.pct - b.pct)
+                  const endYearStr = endOfYear.toLocaleDateString()
+                  const latestStr = latestFinish.toLocaleDateString()
+                  const daysToLatest = projFinishes.length
+                    ? projFinishes.reduce((max, pf) => Math.max(max, pf.remaining), 0)
+                    : 0
+                  const daysToLatestStr =
+                    daysToLatest % 1 === 0 ? String(daysToLatest) : daysToLatest.toFixed(1)
+
+                  return (
+                    <div
+                      className={`mb-2 rounded-xl border p-2 pb-6 ${
+                        isWhiteMode
+                          ? 'border-slate-200 bg-slate-50'
+                          : 'border-white/10 bg-black/30'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className={isWhiteMode ? 'text-slate-700' : 'text-slate-400'}>Today</span>
+                        <span className={isWhiteMode ? 'text-slate-700' : 'text-slate-400'}>
+                          End of year: {endYearStr}
+                        </span>
+                      </div>
+                      <p className={isWhiteMode ? 'text-[10px] text-slate-600' : 'text-[10px] text-slate-400'}>
+                        Latest completion: {latestStr} · {daysToLatestStr} business days
+                      </p>
+                      <div
+                        className={`relative mt-2 h-2 w-full overflow-visible rounded-full ${
+                          isWhiteMode ? 'bg-slate-200' : 'bg-white/10'
+                        }`}
+                      >
+                        {monthTicks.map((d, i) => {
+                          const pct = ((d.getTime() - now.getTime()) / totalMs) * 100
+                          const left = Math.min(100, Math.max(0, pct))
+                          return (
+                            <span
+                              key={`m-${i}`}
+                              className={`${
+                                isWhiteMode ? 'bg-slate-400/40' : 'bg-white/20'
+                              } absolute top-0 bottom-0 w-px`}
+                              style={{ left: `${left}%` }}
+                            />
+                          )
+                        })}
+                        {yearTicks.map((d, i) => {
+                          const pct = ((d.getTime() - now.getTime()) / totalMs) * 100
+                          const left = Math.min(100, Math.max(0, pct))
+                          return (
+                            <span
+                              key={`y-${i}`}
+                              className={`${
+                                isWhiteMode ? 'bg-slate-500/70' : 'bg-white/40'
+                              } absolute -top-0.5 bottom-[-2px] w-[2px]`}
+                              style={{ left: `${left}%` }}
+                            />
+                          )
+                        })}
+                        {projectMarks.map((pf) => (
+                          <button
+                            key={pf.id}
+                            type="button"
+                            title={`${pf.name} · ${pf.finish.toLocaleDateString()}`}
+                            onClick={() => {
+                              if (!user) return
+                              const pr = projects.find((p) => p.id === pf.id)
+                              if (pr) handleOpenProjectModal(pr)
+                            }}
+                            className={`${pf.color} ${isWhiteMode ? 'ring-black/20' : 'ring-white/20'} absolute -top-1 h-3 w-3 -translate-x-1/2 transform rounded-full ring-1 cursor-pointer focus:outline-none focus:ring-2 focus:ring-nest-gold`}
+                            style={{ left: `${pf.pct}%` }}
+                            aria-label={`${pf.name} finishes ${pf.finish.toLocaleDateString()}`}
+                          />
+                        ))}
+                        {quarterTicks.map((d, i) => {
+                          const pct = ((d.getTime() - now.getTime()) / totalMs) * 100
+                          const left = Math.min(100, Math.max(0, pct))
+                          const label = d.toLocaleString(undefined, { month: 'short' })
+                          return (
+                            <span
+                              key={`ql-${i}`}
+                              className={`${isWhiteMode ? 'text-slate-600' : 'text-slate-400'} absolute -bottom-4 -translate-x-1/2 whitespace-nowrap text-[9px]`}
+                              style={{ left: `${left}%` }}
+                            >
+                              {label}
+                            </span>
+                          )
+                        })}
+                        {yearTicks.map((d, i) => {
+                          const pct = ((d.getTime() - now.getTime()) / totalMs) * 100
+                          const left = Math.min(100, Math.max(0, pct))
+                          const label = String(d.getFullYear())
+                          return (
+                            <span
+                              key={`yl-${i}`}
+                              className={`${isWhiteMode ? 'text-slate-700' : 'text-slate-300'} absolute -bottom-6 -translate-x-1/2 whitespace-nowrap text-[9px] font-semibold`}
+                              style={{ left: `${left}%` }}
+                            >
+                              {label}
+                            </span>
+                          )
+                        })}
+                      </div>
+                      <div className="mt-2 flex items-center justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setIsLegendExpanded((v) => !v)}
+                          className={`rounded-full px-2 py-0.5 text-[9px] font-semibold ${
+                            isWhiteMode
+                              ? 'border border-black bg-black text-white hover:bg-slate-900'
+                              : 'border border-white/30 bg-black text-white hover:border-nest-gold/40'
+                          }`}
+                        >
+                          {isLegendExpanded ? 'Hide legend' : 'Legend'}
+                        </button>
+                      </div>
+                      {/* Process legend */}
+                      {isLegendExpanded && processIds.length > 0 && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px]">
+                          {processIds.map((pid) => {
+                            const color = processColorMap.get(pid) || (isWhiteMode ? 'bg-black' : 'bg-nest-gold')
+                            const name = (processes.find((p) => p.id === pid)?.name) || 'Unknown'
+                            const count = projFinishes.filter((pf) => pf.process_id === pid).length
+                            return (
+                              <span key={pid} className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5">
+                                <span className={`inline-block h-2 w-2 rounded-full ${color}`} />
+                                <span className={isWhiteMode ? 'text-slate-700' : 'text-slate-300'}>
+                                  {name} ({count})
+                                </span>
+                              </span>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
                 {projectsError && (
                   <p className="text-[10px] text-red-400">{projectsError}</p>
                 )}
                 {projects.length === 0 ? (
                   <p className="text-[11px] text-slate-500">
-                    No projects yet. Use the New project box on the right to create your first one.
+                    {user
+                      ? 'No projects yet. Use the New Project button above to create your first one.'
+                      : 'No projects yet. Sign in and use the New Project button above to create your first one.'}
                   </p>
                 ) : (
                   <div className="max-h-[420px] space-y-2 overflow-y-auto">
@@ -3138,27 +3761,23 @@ function App() {
                             <div className="flex flex-col items-end gap-1 text-[10px] text-slate-400">
                               <button
                                 type="button"
-                                onClick={() =>
-                                  setExpandedProjectHistoryId((current) =>
-                                    current === project.id ? null : project.id,
-                                  )
-                                }
-                                disabled={previousStepActivities.length === 0}
+                                onClick={() => handleOpenProjectModal(project)}
+                                disabled={!user}
                                 className={`rounded-full px-2 py-0.5 text-[9px] font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
                                   isWhiteMode
                                     ? 'border border-black bg-black text-white hover:bg-slate-900'
                                     : 'border border-white/30 bg-black text-white hover:border-nest-gold/40'
                                 }`}
                               >
-                                History
+                                Open
                               </button>
                             </div>
                           </div>
-                          <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1.3fr)]">
+                          <div className="mt-2 grid gap-2 sm:grid-cols-1 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1.3fr)]">
                             <div className="space-y-1">
-                              <p className="text-[10px] text-slate-400">Progress</p>
+                              <p className="text-xs text-slate-400">Progress</p>
                               <p
-                                className={`text-[10px] ${
+                                className={`text-xs ${
                                   currentStep
                                     ? isWhiteMode
                                       ? 'font-semibold text-slate-900'
@@ -3171,12 +3790,12 @@ function App() {
                                   : 'Not started yet.'}
                               </p>
                               {currentStep?.description && (
-                                <p className="text-[10px] text-slate-400">
+                                <p className="text-xs text-slate-400">
                                   {currentStep.description}
                                 </p>
                               )}
                               {currentStep && (
-                                <p className="text-[9px] text-slate-500">
+                                <p className="text-[10px] text-slate-500">
                                   {lastStepActivity
                                     ? `Last update ${
                                         lastStepActivity.created_by &&
@@ -3191,85 +3810,38 @@ function App() {
                               )}
                               {remainingDuration > 0 && (
                                 <>
-                                  <p className="text-[10px] text-slate-400">
+                                  <p className="text-xs text-slate-400">
                                     Estimated remaining duration: {remainingDurationDisplay} days
                                   </p>
                                   {estimatedFinishDate && (
-                                    <p className="text-[10px] text-slate-400">
+                                    <p className="text-xs text-slate-400">
                                       Estimated finish date: {estimatedFinishDate}
                                     </p>
                                   )}
                                 </>
                               )}
-                              <div className="mt-1 flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  disabled={stepsForProcess.length === 0 || !currentStep || !user}
-                                  onClick={() => {
-                                    if (stepsForProcess.length === 0 || !currentStep) return
-                                    const index = stepsForProcess.findIndex(
-                                      (step) => step.id === currentStep.id,
-                                    )
-                                    if (index <= 0) return
-                                    const previous = stepsForProcess[index - 1]
-                                    void handleChangeProjectStep(project.id, previous.id)
-                                  }}
-                                  className={`flex-1 inline-flex items-center justify-center rounded-full border px-3 py-1 text-[10px] font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
-                                    isWhiteMode
-                                      ? 'border-red-500 bg-red-500 text-white hover:bg-red-600 hover:border-red-600'
-                                      : 'border-red-500/60 bg-red-500/15 text-red-200 hover:border-red-400 hover:bg-red-500/25'
-                                  }`}
-                                >
-                                  &lt;- Go Back
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={stepsForProcess.length === 0 || !user}
-                                  onClick={() => {
-                                    if (stepsForProcess.length === 0) return
-                                    if (!currentStep) {
-                                      const first = stepsForProcess[0]
-                                      void handleChangeProjectStep(project.id, first.id)
-                                      return
-                                    }
-                                    const index = stepsForProcess.findIndex(
-                                      (step) => step.id === currentStep.id,
-                                    )
-                                    if (index < 0) return
-                                    if (index >= stepsForProcess.length - 1) return
-                                    const next = stepsForProcess[index + 1]
-                                    void handleChangeProjectStep(project.id, next.id)
-                                  }}
-                                  className={`flex-1 inline-flex items-center justify-center rounded-full border px-3 py-1 text-[10px] font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
-                                    isWhiteMode
-                                      ? 'border-emerald-500 bg-emerald-500 text-white hover:bg-emerald-600 hover:border-emerald-600'
-                                      : 'border-emerald-500/60 bg-emerald-500/15 text-emerald-300 hover:border-emerald-400 hover:bg-emerald-500/25'
-                                  }`}
-                                >
-                                  Done -&gt;
-                                </button>
-                              </div>
+                              {/* inline step controls moved to modal */}
                             </div>
                             <div
-                              className={`space-y-1 rounded-lg border p-2 ${
+                              className={`hidden space-y-1 rounded-lg border p-2 ${
                                 isWhiteMode
                                   ? 'border-slate-200 bg-slate-50'
                                   : 'border-white/10 bg-black/30'
                               }`}
                             >
                               <p
-                                className={`text-[10px] font-semibold ${
+                                className={`text-xs font-semibold ${
                                   isWhiteMode ? 'text-slate-800' : 'text-slate-300'
                                 }`}
                               >
                                 Step comments
                               </p>
                               {!currentStep ? (
-                                <p className="text-[10px] text-slate-500">
+                                <p className="text-xs text-slate-500">
                                   Start the project to comment on steps.
                                 </p>
                               ) : stepComments.length === 0 ? (
-                                <p className="text-[10px] text-slate-500">
+                                <p className="text-xs text-slate-500">
                                   No comments yet for this step.
                                 </p>
                               ) : (
@@ -3284,15 +3856,24 @@ function App() {
                                       }`}
                                     >
                                       <p
-                                        className={`text-[10px] whitespace-pre-wrap ${
+                                        className={`text-xs whitespace-pre-wrap ${
                                           isWhiteMode ? 'text-slate-800' : 'text-slate-200'
                                         }`}
                                       >
                                         {comment.body}
                                       </p>
                                       <div className="mt-0.5 flex items-center justify-between gap-2">
-                                        <p className="text-[9px] text-slate-500">
-                                          {new Date(comment.created_at).toLocaleString()}
+                                        <p className="text-[10px] text-slate-500">
+                                          {(() => {
+                                            const authorId = comment.created_by
+                                            if (!authorId) return 'Unknown'
+                                            if (authorId === user?.id) {
+                                              return profileFirstName.trim() || 'You'
+                                            }
+                                            const name = authorFirstNames[authorId]
+                                            return name || 'Team member'
+                                          })()}{' '}
+                                          · {new Date(comment.created_at).toLocaleString()}
                                         </p>
                                         {isAdmin && (
                                           <button
@@ -3310,7 +3891,7 @@ function App() {
                                 </div>
                               )}
                               {projectCommentsError && (
-                                <p className="text-[10px] text-red-400">{projectCommentsError}</p>
+                                <p className="text-xs text-red-400">{projectCommentsError}</p>
                               )}
                               {currentStep && (
                                 <form
@@ -3324,7 +3905,7 @@ function App() {
                                   }
                                 >
                                   <textarea
-                                    className={`h-12 w-full resize-none rounded border px-2 py-1 text-[10px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                                    className={`h-12 w-full resize-none rounded border px-2 py-1.5 text-xs placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
                                       isWhiteMode
                                         ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
                                         : 'border-white/10 bg-black/40 text-slate-100'
@@ -3420,42 +4001,52 @@ function App() {
                   </div>
                 )}
               </div>
-              <aside
-                className={`mt-2 w-full max-w-xs rounded-2xl border p-3 text-[10px] md:mt-0 md:ml-4 ${
-                  isWhiteMode
-                    ? 'border-slate-200 bg-white text-slate-900'
-                    : 'border-white/10 bg-black/30 text-slate-100'
+              {/* New Project aside removed in favor of modal */}
+            </div>
+          </section>
+          {isNewProjectModalOpen && user && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsNewProjectModalOpen(false)}>
+              <div
+                className={`w-full max-w-sm rounded-2xl border p-4 text-[11px] shadow-soft-elevated ${
+                  isWhiteMode ? 'border-slate-200 bg-white text-slate-900' : 'border-white/10 bg-black/80 text-slate-100'
                 }`}
+                onClick={(e) => e.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="new-project-title"
               >
-                <form className="space-y-2" onSubmit={handleCreateProject}>
-                  <div>
-                    <p className="text-[10px] font-semibold text-slate-300">New project</p>
-                    <p className="text-[10px] text-slate-500">
-                      {user
-                        ? 'Pick a process template and give the project a clear name (e.g. Renovation – Penthouse A).'
-                        : 'Sign in to create projects from process templates.'}
-                    </p>
-                  </div>
+                <div className="mb-2 flex items-center justify-between">
+                  <h3 id="new-project-title" className="text-[12px] font-semibold">New Project</h3>
+                  <button
+                    type="button"
+                    onClick={() => setIsNewProjectModalOpen(false)}
+                    className={`rounded-full px-2 py-0.5 text-[10px] ${
+                      isWhiteMode ? 'border border-slate-300' : 'border border-white/20'
+                    }`}
+                  >
+                    Close
+                  </button>
+                </div>
+                <p className={isWhiteMode ? 'text-[10px] text-slate-600' : 'text-[10px] text-slate-400'}>
+                  Pick a process template and give the project a clear name (e.g. Renovation – Penthouse A).
+                </p>
+                <form className="mt-2 space-y-2" onSubmit={handleCreateProject}>
                   <input
-                    className={`w-full rounded-xl border px-3 py-1 text-[10px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
-                      isWhiteMode
-                        ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
-                        : 'border-white/10 bg-black/40 text-slate-100'
+                    className={`w-full rounded-xl border px-3 py-1 text-[11px] placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                      isWhiteMode ? 'border-slate-300 bg-white text-slate-900 shadow-sm' : 'border-white/10 bg-black/40 text-slate-100'
                     }`}
                     placeholder="Project name"
                     value={newProjectName}
                     onChange={(event) => setNewProjectName(event.target.value)}
-                    disabled={!user}
+                    disabled={isCreatingProject}
                   />
                   <select
-                    className={`w-full rounded-xl border px-2.5 py-1 text-[10px] focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
-                      isWhiteMode
-                        ? 'border-slate-300 bg-white text-slate-900 shadow-sm'
-                        : 'border-white/10 bg-black/40 text-slate-100'
+                    className={`w-full rounded-xl border px-2.5 py-1 text-[11px] focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                      isWhiteMode ? 'border-slate-300 bg-white text-slate-900 shadow-sm' : 'border-white/10 bg-black/40 text-slate-100'
                     }`}
                     value={newProjectProcessId}
                     onChange={(event) => setNewProjectProcessId(event.target.value)}
-                    disabled={!user}
+                    disabled={isCreatingProject}
                   >
                     <option value="">Select process template</option>
                     {processes.map((process) => (
@@ -3467,17 +4058,446 @@ function App() {
                   {projectFormError && (
                     <p className="text-[10px] text-red-400">{projectFormError}</p>
                   )}
-                  <button
-                    type="submit"
-                    disabled={isCreatingProject || !user}
-                    className="w-full rounded-full bg-nest-gold px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-black shadow-soft-elevated hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {isCreatingProject ? 'Creating...' : 'Create project'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="submit"
+                      disabled={isCreatingProject}
+                      className="flex-1 rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isCreatingProject ? 'Creating…' : 'Create project'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsNewProjectModalOpen(false)}
+                      className={`rounded-full px-3 py-1 text-[10px] ${
+                        isWhiteMode ? 'border border-slate-300' : 'border border-white/20'
+                      }`}
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </form>
-              </aside>
+              </div>
             </div>
-          </section>
+          )}
+          {isProjectModalOpen && user && selectedProjectForModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={handleCloseProjectModal}>
+              <div
+                className={`w-full max-w-3xl rounded-2xl border p-5 text-[11px] shadow-soft-elevated ${
+                  isWhiteMode ? 'border-slate-200 bg-white text-slate-900' : 'border-white/10 bg-black/80 text-slate-100'
+                }`}
+                onClick={(e) => e.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="project-details-title"
+              >
+                {(() => {
+                  const projectRef = selectedProjectForModal as Project
+                  const project = projects.find((p) => p.id === projectRef.id) ?? projectRef
+                  const steps = projectSteps
+                    .filter((s) => s.process_id === project.process_id)
+                    .slice()
+                    .sort((a, b) => a.order_index - b.order_index)
+                  const currentIndex = project.current_step_id
+                    ? steps.findIndex((s) => s.id === project.current_step_id)
+                    : -1
+                  const currentStep = currentIndex >= 0 ? steps[currentIndex] : null
+                  const stepComments = currentStep
+                    ? projectComments
+                        .filter((c) => c.project_id === project.id && c.step_id === currentStep.id)
+                        .slice()
+                        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                    : []
+                  const commentKey = currentStep ? `${project.id}:${currentStep.id}` : null
+                  const commentDraft = commentKey ? (newProjectComments[commentKey] ?? '') : ''
+
+                  return (
+                    <>
+                      <div className="mb-3 flex items-center justify-between gap-2">
+                        <h3 id="project-details-title" className="text-[12px] font-semibold">
+                          {project.name}
+                        </h3>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setIsProjectHistoryOpen((v) => !v)}
+                            className={`rounded-full px-2 py-0.5 text-[10px] ${
+                              isWhiteMode ? 'border border-slate-300' : 'border border-white/20'
+                            }`}
+                          >
+                            {isProjectHistoryOpen ? 'Hide history' : 'History'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleCloseProjectModal}
+                            className={`rounded-full px-2 py-0.5 text-[10px] ${
+                              isWhiteMode ? 'border border-slate-300' : 'border border-white/20'
+                            }`}
+                          >
+                            Close
+                          </button>
+                        </div>
+                      </div>
+                      <div className={`rounded-xl border p-3 ${isWhiteMode ? 'border-slate-200 bg-slate-50' : 'border-white/10 bg-black/40'}`}>
+                        <p className="text-[10px] text-slate-500">Current Status</p>
+                        <p className={`text-xs ${currentStep ? (isWhiteMode ? 'font-semibold text-slate-900' : 'font-semibold text-slate-100') : 'text-slate-500'}`}>
+                          {currentStep ? `${currentStep.order_index}. ${currentStep.title}` : 'Not started yet.'}
+                        </p>
+                        {currentStep?.description && (
+                          <p className="text-xs text-slate-400">{currentStep.description}</p>
+                        )}
+                        <div className="mt-2 flex gap-2">
+                          <button
+                            type="button"
+                            disabled={!currentStep || currentIndex <= 0 || isChangingProjectStep}
+                            onClick={() => {
+                              if (!currentStep || currentIndex <= 0) return
+                              const prev = steps[currentIndex - 1]
+                              void handleChangeProjectStep(project.id, prev.id)
+                            }}
+                            className={`rounded-full px-3 py-1 text-[10px] font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
+                              isWhiteMode
+                                ? 'border border-red-500 bg-red-500 text-white hover:bg-red-600'
+                                : 'border border-red-500/60 bg-red-500/15 text-red-200 hover:border-red-400 hover:bg-red-500/25'
+                            }`}
+                          >
+                            {isChangingProjectStep ? 'Updating…' : '← Back'}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!steps.length || currentIndex >= steps.length - 1 || isChangingProjectStep}
+                            onClick={() => {
+                              if (!steps.length || currentIndex >= steps.length - 1) return
+                              const next = steps[currentIndex + 1]
+                              void handleChangeProjectStep(project.id, next.id)
+                            }}
+                            className={`rounded-full px-3 py-1 text-[10px] font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
+                              isWhiteMode
+                                ? 'border border-emerald-500 bg-emerald-500 text-white hover:bg-emerald-600'
+                                : 'border border-emerald-500/60 bg-emerald-500/15 text-emerald-300 hover:border-emerald-400 hover:bg-emerald-500/25'
+                            }`}
+                          >
+                            {isChangingProjectStep ? 'Updating…' : 'Done →'}
+                          </button>
+                        </div>
+                        {(() => {
+                          const remainingSteps = currentIndex >= 0 ? steps.slice(currentIndex) : steps
+                          const remainingDays = remainingSteps.reduce((sum, s) => sum + (Number.isFinite(s.duration_days ?? 0) ? (s.duration_days as number) : 0), 0)
+                          const eta = addBusinessDays(new Date(), remainingDays)
+                          const etaStr = eta.toLocaleDateString()
+                          return (
+                            <p className={isWhiteMode ? 'mt-2 text-[10px] text-slate-600' : 'mt-2 text-[10px] text-slate-400'}>
+                              ETA: {etaStr}
+                            </p>
+                          )
+                        })()}
+                      </div>
+                      {isProjectHistoryOpen && (
+                        <div className={`mb-3 rounded-xl border p-3 ${isWhiteMode ? 'border-slate-200 bg-slate-50' : 'border-white/10 bg-black/40'}`}>
+                          <p className="mb-2 text-[10px] font-semibold text-slate-400">History</p>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            {/* Step activity (comments) */}
+                            <div>
+                              <p className={isWhiteMode ? 'text-[10px] text-slate-600' : 'text-[10px] text-slate-400'}>Progress</p>
+                              {(() => {
+                                const stepMap = new Map(steps.map((s) => [s.id, s]))
+                                const items = projectComments
+                                  .filter((c) => c.project_id === project.id)
+                                  .slice()
+                                  .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                                if (items.length === 0) {
+                                  return <p className="text-[10px] text-slate-500">No activity yet.</p>
+                                }
+                                return (
+                                  <ul className="mt-1 space-y-1 max-h-40 overflow-y-auto">
+                                    {items.map((c) => {
+                                      const s = stepMap.get(c.step_id)
+                                      const author = authorFirstNames[c.created_by || ''] || 'Unknown'
+                                      return (
+                                        <li key={c.id} className="text-[10px]">
+                                          <span className={isWhiteMode ? 'text-slate-800' : 'text-slate-200'}>
+                                            {s ? `${s.order_index}. ${s.title}` : 'Step'}
+                                          </span>
+                                          <span className={isWhiteMode ? 'text-slate-500' : 'text-slate-500'}>
+                                            {' '}· {author} · {new Date(c.created_at).toLocaleString()}
+                                          </span>
+                                          {c.body && (
+                                            <div className={isWhiteMode ? 'text-slate-700' : 'text-slate-300'}>
+                                              “{c.body}”
+                                            </div>
+                                          )}
+                                        </li>
+                                      )
+                                    })}
+                                  </ul>
+                                )
+                              })()}
+                            </div>
+                            {/* Financial (invoices) */}
+                            <div>
+                              <p className={isWhiteMode ? 'text-[10px] text-slate-600' : 'text-[10px] text-slate-400'}>Financial</p>
+                              {(() => {
+                                const list = invoicesByProject[project.id] ?? []
+                                if (list.length === 0) return <p className="text-[10px] text-slate-500">No invoices yet.</p>
+                                return (
+                                  <ul className="mt-1 space-y-1 max-h-40 overflow-y-auto">
+                                    {list.map((inv) => {
+                                      const signed = inv.direction === 'paid' ? -inv.amount : inv.amount
+                                      const pos = signed >= 0
+                                      const fmt = Math.abs(signed).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                                      return (
+                                        <li key={inv.id} className="text-[10px]">
+                                          <span className={pos ? 'text-emerald-500' : 'text-red-500'}>
+                                            {pos ? '+' : '−'}€{fmt}
+                                          </span>
+                                          <span className={isWhiteMode ? 'text-slate-500' : 'text-slate-500'}>
+                                            {' '}· {inv.invoice_number || '—'} · {new Date(inv.created_at).toLocaleString()}
+                                          </span>
+                                          {inv.description && (
+                                            <div className={isWhiteMode ? 'text-slate-700' : 'text-slate-300'}>
+                                              “{inv.description}”
+                                            </div>
+                                          )}
+                                        </li>
+                                      )
+                                    })}
+                                  </ul>
+                                )
+                              })()}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      <div className="mt-3">
+                        {/* Files */}
+                        <div className={`mb-3 rounded-xl border p-3 ${isWhiteMode ? 'border-slate-200 bg-slate-50' : 'border-white/10 bg-black/40'}`}>
+                          <div className="mb-2 flex items-center justify-between">
+                            <p className="text-[10px] font-semibold text-slate-400">Files</p>
+                            <label
+                              className={`inline-flex cursor-pointer items-center gap-2 rounded-full px-2 py-1 text-[10px] ${
+                                isWhiteMode ? 'border border-black bg-black text-white hover:bg-slate-900' : 'border border-white/30 bg-black text-white hover:border-nest-gold/40'
+                              }`}
+                            >
+                              <input
+                                type="file"
+                                multiple
+                                className="hidden"
+                                onChange={(e) => void handleUploadProjectFiles(project.id, e.target.files)}
+                              />
+                              {isUploadingFilesProjectId === project.id ? 'Uploading…' : 'Upload files'}
+                            </label>
+                          </div>
+                          {filesError && <p className="text-[10px] text-red-400">{filesError}</p>}
+                          <div className="max-h-40 space-y-1 overflow-y-auto">
+                            {(projectFiles[project.id] ?? []).length === 0 ? (
+                              <p className="text-[10px] text-slate-500">No files yet.</p>
+                            ) : (
+                              (projectFiles[project.id] ?? []).map((f) => (
+                                <div key={f.path} className="flex items-center justify-between gap-2 text-[10px]">
+                                  <span className={isWhiteMode ? 'text-slate-700' : 'text-slate-300'}>{f.name}</span>
+                                  <div className="flex items-center gap-1">
+                                    <a
+                                      href={f.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className={`rounded-full px-2 py-0.5 ${isWhiteMode ? 'border border-slate-300' : 'border border-white/20'}`}
+                                    >
+                                      Open
+                                    </a>
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleDeleteProjectFile(project.id, f.path)}
+                                      disabled={isDeletingFilePath === f.path}
+                                      className="rounded-full border border-red-500/60 bg-red-500/10 px-2 py-0.5 text-[9px] text-red-200 hover:border-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      {isDeletingFilePath === f.path ? 'Deleting…' : 'Delete'}
+                                    </button>
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Invoices */}
+                        <div className={`mb-3 rounded-xl border p-3 ${isWhiteMode ? 'border-slate-200 bg-slate-50' : 'border-white/10 bg-black/40'}`}>
+                          <div className="mb-2 flex items-center justify-between">
+                            <p className="text-[10px] font-semibold text-slate-400">Invoices</p>
+                            {(() => {
+                              const list = invoicesByProject[project.id] ?? []
+                              const total = list.reduce((sum, inv) => sum + (inv.amount * (inv.direction === 'paid' ? -1 : 1)), 0)
+                              const pos = total >= 0
+                              const fmt = Math.abs(total).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                              return (
+                                <span className={`text-[10px] ${pos ? 'text-emerald-500' : 'text-red-500'}`}>
+                                  Total: {pos ? '+' : '−'}€{fmt}
+                                </span>
+                              )
+                            })()}
+                          </div>
+                          {invoicesError && <p className="text-[10px] text-red-400">{invoicesError}</p>}
+                          <div className="max-h-40 space-y-1 overflow-y-auto">
+                            {(invoicesByProject[project.id] ?? []).length === 0 ? (
+                              <p className="text-[10px] text-slate-500">No invoices yet.</p>
+                            ) : (
+                              (invoicesByProject[project.id] ?? []).map((inv) => (
+                                <div key={inv.id} className="flex items-center justify-between gap-2 text-[10px]">
+                                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                                    <span className={`shrink-0 ${isWhiteMode ? 'text-slate-700' : 'text-slate-300'}`}>
+                                      {inv.invoice_number || '—'}
+                                    </span>
+                                    <span className={`truncate ${isWhiteMode ? 'text-slate-600' : 'text-slate-400'}`}>
+                                      {inv.description || '—'}
+                                    </span>
+                                  </div>
+                                  <div className="shrink-0">
+                                    {(() => {
+                                      const signed = inv.direction === 'paid' ? -inv.amount : inv.amount
+                                      const pos = signed >= 0
+                                      const fmt = Math.abs(signed).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                                      return (
+                                        <span className={`${pos ? 'text-emerald-500' : 'text-red-500'}`}>
+                                          {pos ? '+' : '−'}€{fmt}
+                                        </span>
+                                      )
+                                    })()}
+                                  </div>
+                                  <span className={isWhiteMode ? 'text-slate-500' : 'text-slate-500'}>
+                                    {new Date(inv.created_at).toLocaleDateString()}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleDeleteInvoice(inv.id, project.id)}
+                                    disabled={isDeletingInvoiceId === inv.id}
+                                    className="rounded-full border border-red-500/60 bg-red-500/10 px-2 py-0.5 text-[9px] text-red-200 hover:border-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    {isDeletingInvoiceId === inv.id ? 'Deleting…' : 'Delete'}
+                                  </button>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                          <form
+                            className="mt-2 flex flex-wrap items-center gap-2"
+                            onSubmit={(e) => void handleAddInvoice(e, project.id)}
+                          >
+                            <input
+                              className={`w-32 rounded-xl border px-2 py-1 text-[10px] ${isWhiteMode ? 'border-slate-300 bg-white text-slate-900' : 'border-white/10 bg-black/40 text-slate-100'}`}
+                              placeholder="Invoice No."
+                              value={newInvoiceNumberByProject[project.id] ?? ''}
+                              onChange={(e) => {
+                                setNewInvoiceNumberByProject((prev) => ({ ...prev, [project.id]: e.target.value }))
+                                setInvoicesError(null)
+                              }}
+                            />
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              className={`w-28 rounded-xl border px-2 py-1 text-[10px] ${isWhiteMode ? 'border-slate-300 bg-white text-slate-900' : 'border-white/10 bg-black/40 text-slate-100'}`}
+                              placeholder="Amount (€)"
+                              value={newInvoiceAmountByProject[project.id] ?? ''}
+                              onChange={(e) => {
+                                setNewInvoiceAmountByProject((prev) => ({ ...prev, [project.id]: e.target.value }))
+                                setInvoicesError(null)
+                              }}
+                            />
+                            <select
+                              className={`w-28 rounded-xl border px-2 py-1 text-[10px] ${isWhiteMode ? 'border-slate-300 bg-white text-slate-900' : 'border-white/10 bg-black/40 text-slate-100'}`}
+                              value={newInvoiceDirectionByProject[project.id] ?? 'paid'}
+                              onChange={(e) => {
+                                const val = (e.target.value === 'received' ? 'received' : 'paid') as 'paid' | 'received'
+                                setNewInvoiceDirectionByProject((prev) => ({ ...prev, [project.id]: val }))
+                                setInvoicesError(null)
+                              }}
+                            >
+                              <option value="paid">Paid (−)</option>
+                              <option value="received">Received (+)</option>
+                            </select>
+                            <input
+                              className={`min-w-[140px] flex-1 rounded-xl border px-2 py-1 text-[10px] ${isWhiteMode ? 'border-slate-300 bg-white text-slate-900' : 'border-white/10 bg-black/40 text-slate-100'}`}
+                              placeholder="Description (optional)"
+                              value={newInvoiceDescByProject[project.id] ?? ''}
+                              onChange={(e) => {
+                                setNewInvoiceDescByProject((prev) => ({ ...prev, [project.id]: e.target.value }))
+                                setInvoicesError(null)
+                              }}
+                            />
+                            <button
+                              type="submit"
+                              disabled={isAddingInvoiceProjectId === project.id}
+                              className="rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {isAddingInvoiceProjectId === project.id ? 'Adding…' : 'Add'}
+                            </button>
+                          </form>
+                        </div>
+                        <p className="text-[10px] font-semibold text-slate-400">Step comments</p>
+                        {currentStep ? (
+                          <>
+                            {stepComments.length === 0 ? (
+                              <p className="text-xs text-slate-500">No comments yet for this step.</p>
+                            ) : (
+                              <div className="mt-1 max-h-40 space-y-1 overflow-y-auto">
+                                {stepComments.map((c) => (
+                                  <div key={c.id} className={`rounded border px-2 py-1 ${isWhiteMode ? 'border-slate-200 bg-white' : 'border-white/10 bg-black/40'}`}>
+                                    <p className={`text-xs ${isWhiteMode ? 'text-slate-800' : 'text-slate-200'}`}>{c.body}</p>
+                                    <div className="mt-0.5 flex items-center justify-between gap-2">
+                                      <p className="text-[10px] text-slate-500">
+                                        {(authorFirstNames[c.created_by || ''] || 'Unknown')} · {new Date(c.created_at).toLocaleString()}
+                                      </p>
+                                      {isAdmin && (
+                                        <button
+                                          type="button"
+                                          onClick={() => void handleDeleteProjectStepComment(c.id)}
+                                          disabled={deletingProjectCommentId === c.id}
+                                          className="rounded-full border border-red-500/40 bg-red-500/10 px-2 py-0.5 text-[9px] text-red-200 hover:border-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                        >
+                                          {deletingProjectCommentId === c.id ? 'Deleting…' : 'Delete'}
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <form
+                              className="mt-2 space-y-1"
+                              onSubmit={(event) => void handleSubmitProjectStepComment(event, project.id, currentStep.id)}
+                            >
+                              <input
+                                className={`w-full rounded-lg border px-3 py-2 text-xs placeholder:text-slate-500 focus:border-nest-gold/60 focus:outline-none focus:ring-1 focus:ring-nest-gold/50 ${
+                                  isWhiteMode ? 'border-slate-300 bg-white text-slate-900 shadow-sm' : 'border-white/10 bg-black/40 text-slate-100'
+                                }`}
+                                placeholder="Add a comment..."
+                                value={commentDraft}
+                                onChange={(event) => {
+                                  if (!commentKey) return
+                                  setNewProjectComments({
+                                    ...newProjectComments,
+                                    [commentKey]: event.target.value,
+                                  })
+                                }}
+                              />
+                              <button
+                                type="submit"
+                                disabled={!commentKey || !commentDraft.trim() || isSubmittingProjectCommentKey === commentKey}
+                                className="rounded-full bg-nest-gold px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-black hover:bg-nest-gold-soft disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {isSubmittingProjectCommentKey === commentKey ? 'Posting…' : 'Post Comment'}
+                              </button>
+                            </form>
+                          </>
+                        ) : (
+                          <p className="text-xs text-slate-500">Start the project to comment on steps.</p>
+                        )}
+                      </div>
+                    </>
+                  )
+                })()}
+              </div>
+            </div>
+          )}
         </main>
       ) : activePage === 'settings' ? (
         <main className="mx-auto flex w-full max-w-xl flex-1 flex-col gap-4 px-6 pb-6 pt-4">

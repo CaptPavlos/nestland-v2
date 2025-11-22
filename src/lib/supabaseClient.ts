@@ -9,7 +9,7 @@ if (supabaseUrl && supabaseAnonKey) {
   client = createClient(supabaseUrl, supabaseAnonKey)
 } else {
   if (import.meta.env.DEV) {
-    // eslint-disable-next-line no-console
+     
     console.warn(
       '[Nest Land Processes] Supabase env vars are not set. Anonymous comments are disabled until VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are configured.',
     )
