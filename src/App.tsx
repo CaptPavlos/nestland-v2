@@ -1084,16 +1084,28 @@ function App() {
     setDeletingProjectCommentId(commentId)
     setProjectCommentsError(null)
 
-    const { error } = await supabase
+    console.log('=== DELETE COMMENT DEBUG ===')
+    console.log('Comment ID to delete:', commentId)
+    console.log('User email:', user?.email)
+
+    const { data, error, count, status, statusText } = await supabase
       .from('project_step_comments')
       .delete()
       .eq('id', commentId)
+      .select()
+
+    console.log('Delete response:', { data, error, count, status, statusText })
 
     if (error) {
        
       console.error('Failed to delete project step comment', error)
-      setProjectCommentsError('Failed to delete project step comment')
+      setProjectCommentsError(`Failed to delete: ${error.message}`)
+    } else if (!data || data.length === 0) {
+      // RLS policy prevented deletion - no rows were actually deleted
+      console.error('Delete returned no rows - comment may not exist or RLS blocking')
+      setProjectCommentsError('Unable to delete comment. It may not exist or you lack permission.')
     } else {
+      console.log('Delete SUCCESS! Removed:', data)
       setProjectComments((prev) => prev.filter((comment) => comment.id !== commentId))
     }
 
@@ -1194,17 +1206,22 @@ function App() {
     setIsUploadingFilesProjectId(projectId)
     setFilesError(null)
     try {
+      const failures: { name: string; message: string }[] = []
       for (const file of Array.from(files)) {
         const path = `projects/${projectId}/${Date.now()}-${file.name}`
         const { error } = await supabase.storage.from(PROJECT_FILES_BUCKET).upload(path, file, {
           upsert: true,
         })
         if (error) {
-          setFilesError('Failed to upload one or more files')
-          break
+          failures.push({ name: file.name, message: error.message ?? 'Unknown error' })
         }
       }
+      // Refresh list regardless of failures so successfully uploaded files appear
       await loadProjectFiles(projectId)
+      if (failures.length > 0) {
+        const failedList = failures.map((f) => f.name).join(', ')
+        setFilesError(`Failed to upload ${failures.length} file(s): ${failedList}`)
+      }
     } finally {
       setIsUploadingFilesProjectId(null)
     }
@@ -1350,7 +1367,16 @@ function App() {
     if (!supabase) return
     if (!isAdmin) return
 
-    const { error } = await supabase.from('comments').delete().eq('id', id)
+    console.log('=== DELETE WORKFLOW COMMENT DEBUG ===')
+    console.log('Comment ID to delete:', id)
+
+    const { data, error } = await supabase
+      .from('comments')
+      .delete()
+      .eq('id', id)
+      .select()
+
+    console.log('Delete response:', { data, error })
 
     if (error) {
        
@@ -1359,6 +1385,13 @@ function App() {
       return
     }
 
+    if (!data || data.length === 0) {
+      console.error('Delete returned no rows - RLS policy may be blocking')
+      setCommentError('Permission denied: Unable to delete comment.')
+      return
+    }
+
+    console.log('Delete SUCCESS!')
     setComments((prev) => prev.filter((comment) => comment.id !== id))
     setCommentError(null)
   }

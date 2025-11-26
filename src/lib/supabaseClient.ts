@@ -11,7 +11,7 @@ if (supabaseUrl && supabaseAnonKey) {
   if (import.meta.env.DEV) {
      
     console.warn(
-      '[Nest Land Processes] Supabase env vars are not set. Anonymous comments are disabled until VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are configured.',
+      '[Nestland v2] Supabase env vars are not set. Anonymous comments are disabled until VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are configured.',
     )
   }
 }
