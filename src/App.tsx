@@ -10,8 +10,7 @@ import {
   type Node,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import type { User } from '@supabase/supabase-js'
-import { supabase } from './lib/supabaseClient'
+import { supabase, auth, getCurrentUser, type User } from './lib/supabaseClient'
 
 type Comment = {
   id: string
@@ -42,6 +41,7 @@ type ProcessStep = {
   role: string | null
   order_index: number
   duration_days: number | null
+  created_at: string
 }
 
 type ProcessTransition = {
@@ -93,42 +93,57 @@ const ADMIN_EMAIL = 'captain-pavlos@outlook.com'
 const DEFAULT_PROCESS_SLUG = 'renovation'
 const PROJECT_FILES_BUCKET = 'project-files'
 
-const ROLE_COLORS: Record<string, { border: string; background: string; badge: string }> = {
+// Define empty nodeTypes and edgeTypes outside the component to avoid React Flow warnings
+const nodeTypes = {}
+const edgeTypes = {}
+
+const ROLE_COLORS: Record<string, {
+  dark: { border: string; background: string; text: string };
+  light: { border: string; background: string; text: string };
+  badge: string;
+}> = {
   Client: {
-    border: '#38bdf8',
-    background: 'rgba(15,23,42,0.9)',
+    dark: { border: '#38bdf8', background: 'rgba(15,23,42,0.9)', text: '#f9fafb' },
+    light: { border: '#0284c7', background: '#e0f2fe', text: '#0c4a6e' },
     badge: 'border-sky-500 bg-sky-100 text-sky-900',
   },
   MD: {
-    border: '#facc15',
-    background: 'rgba(51, 37, 0, 0.9)',
+    dark: { border: '#facc15', background: 'rgba(51, 37, 0, 0.9)', text: '#f9fafb' },
+    light: { border: '#ca8a04', background: '#fef9c3', text: '#713f12' },
     badge: 'border-yellow-500 bg-yellow-100 text-yellow-900',
   },
   OPS: {
-    border: '#22c55e',
-    background: 'rgba(6, 78, 59, 0.9)',
+    dark: { border: '#22c55e', background: 'rgba(6, 78, 59, 0.9)', text: '#f9fafb' },
+    light: { border: '#16a34a', background: '#dcfce7', text: '#14532d' },
     badge: 'border-emerald-500 bg-emerald-100 text-emerald-900',
   },
   PM: {
-    border: '#a855f7',
-    background: 'rgba(46,16,101,0.9)',
+    dark: { border: '#a855f7', background: 'rgba(46,16,101,0.9)', text: '#f9fafb' },
+    light: { border: '#9333ea', background: '#f3e8ff', text: '#581c87' },
     badge: 'border-purple-500 bg-purple-100 text-purple-900',
   },
   'PM & OPS': {
-    border: '#f97316',
-    background: 'rgba(30,64,175,0.9)',
+    dark: { border: '#f97316', background: 'rgba(30,64,175,0.9)', text: '#f9fafb' },
+    light: { border: '#ea580c', background: '#ffedd5', text: '#7c2d12' },
     badge: 'border-orange-500 bg-orange-100 text-orange-900',
+  },
+  Unassigned: {
+    dark: { border: '#64748b', background: 'rgba(15,23,42,0.95)', text: '#f9fafb' },
+    light: { border: '#64748b', background: '#f1f5f9', text: '#334155' },
+    badge: 'border-slate-400 bg-slate-100 text-slate-800',
   },
 }
 
-function getRoleColors(role: string | null): { border: string; background: string } {
+function getRoleColors(role: string | null, isWhiteMode: boolean): { border: string; background: string; text: string } {
   const key = role?.trim() || 'Unassigned'
   const config = ROLE_COLORS[key]
-  if (config) return { border: config.border, background: config.background }
-  return {
-    border: '#64748b',
-    background: 'rgba(15,23,42,0.95)',
+  if (config) {
+    return isWhiteMode ? config.light : config.dark
   }
+  // Fallback for unknown roles
+  return isWhiteMode
+    ? { border: '#64748b', background: '#f1f5f9', text: '#334155' }
+    : { border: '#64748b', background: 'rgba(15,23,42,0.95)', text: '#f9fafb' }
 }
 
 function getRoleBadgeClasses(role: string | null): string {
@@ -320,6 +335,8 @@ function App() {
     }
   })
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [isAdminPanelMinimized, setIsAdminPanelMinimized] = useState(false)
+  const [adminPanelHeight, setAdminPanelHeight] = useState<'sm' | 'md' | 'lg' | 'full'>('md')
   const [newRoleName, setNewRoleName] = useState('')
   const [rolesError, setRolesError] = useState<string | null>(null)
 
@@ -353,15 +370,9 @@ function App() {
   }, [isNewProjectModalOpen, isProjectModalOpen])
 
   useEffect(() => {
-    const client = supabase
-    if (!client) return
-
-    void (async () => {
-      const {
-        data: { user: currentUser },
-      } = await client.auth.getUser()
-      setUser(currentUser)
-    })()
+    // Load user from localStorage on mount
+    const currentUser = getCurrentUser()
+    setUser(currentUser)
   }, [])
 
   useEffect(() => {
@@ -628,7 +639,7 @@ function App() {
       const [stepsResult, transitionsResult] = await Promise.all([
         client
           .from('process_steps')
-          .select('id, process_id, title, description, role, order_index, duration_days')
+          .select('id, process_id, title, description, role, order_index, duration_days, created_at')
           .eq('process_id', selectedProcessId)
           .order('order_index', { ascending: true }),
         client
@@ -1088,13 +1099,13 @@ function App() {
     console.log('Comment ID to delete:', commentId)
     console.log('User email:', user?.email)
 
-    const { data, error, count, status, statusText } = await supabase
+    const { data, error } = await supabase
       .from('project_step_comments')
       .delete()
       .eq('id', commentId)
       .select()
 
-    console.log('Delete response:', { data, error, count, status, statusText })
+    console.log('Delete response:', { data, error })
 
     if (error) {
        
@@ -1409,15 +1420,11 @@ function App() {
 
     setIsLoggingIn(true)
     setAuthMessage(null)
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    })
+    const { data, error } = await auth.signInWithPassword({ email, password })
 
     if (error) {
-       
       console.error('Failed to log in', error)
-      setAuthMessage('Login failed. Check email and password.')
+      setAuthMessage(error.message || 'Login failed. Check email and password.')
     } else if (data.user) {
       setUser(data.user)
       setAuthMessage(null)
@@ -1426,8 +1433,7 @@ function App() {
   }
 
   const handleSignOut = async () => {
-    if (!supabase) return
-    await supabase.auth.signOut()
+    await auth.signOut()
     setUser(null)
   }
 
@@ -1741,7 +1747,7 @@ function App() {
           description: newStepDescription.trim() || null,
           duration_days: durationDays,
         })
-        .select('id, process_id, title, description, role, order_index, duration_days')
+        .select('id, process_id, title, description, role, order_index, duration_days, created_at')
         .single()
 
       if (error) {
@@ -1831,7 +1837,7 @@ function App() {
         duration_days: durationDays,
       })
       .eq('id', selectedStepId)
-      .select('id, process_id, title, description, role, order_index, duration_days')
+      .select('id, process_id, title, description, role, order_index, duration_days, created_at')
       .single()
 
     if (error) {
@@ -1893,6 +1899,70 @@ function App() {
     setTransitionFormError(null)
   }
 
+  const [isAutoConnecting, setIsAutoConnecting] = useState(false)
+
+  const handleAutoConnectSteps = async () => {
+    if (!supabase) return
+    if (!isAdmin) return
+    if (!selectedProcessId) return
+
+    // Get steps for this process sorted by order_index
+    const processSteps = steps
+      .filter((s) => s.process_id === selectedProcessId)
+      .sort((a, b) => (a.order_index || 0) - (b.order_index || 0))
+
+    if (processSteps.length < 2) {
+      setTransitionFormError('Need at least 2 steps to auto-connect')
+      return
+    }
+
+    setIsAutoConnecting(true)
+    setTransitionFormError(null)
+
+    // Get existing transitions for this process
+    const existingTransitions = transitions.filter((t) => t.process_id === selectedProcessId)
+    const existingPairs = new Set(
+      existingTransitions.map((t) => `${t.from_step_id}:${t.to_step_id}`)
+    )
+
+    const newTransitions: ProcessTransition[] = []
+
+    // Create transitions between consecutive steps
+    for (let i = 0; i < processSteps.length - 1; i++) {
+      const fromStep = processSteps[i]
+      const toStep = processSteps[i + 1]
+      const pairKey = `${fromStep.id}:${toStep.id}`
+
+      // Skip if transition already exists
+      if (existingPairs.has(pairKey)) continue
+
+      const { data, error } = await supabase
+        .from('process_transitions')
+        .insert({
+          process_id: selectedProcessId,
+          from_step_id: fromStep.id,
+          to_step_id: toStep.id,
+          label: null,
+        })
+        .select('id, process_id, from_step_id, to_step_id, label')
+        .single()
+
+      if (error) {
+        console.error('Failed to create auto-connection', error)
+        setTransitionFormError(`Failed to connect step ${i + 1} to step ${i + 2}`)
+        break
+      } else if (data) {
+        newTransitions.push(data)
+      }
+    }
+
+    if (newTransitions.length > 0) {
+      setTransitions((prev) => [...prev, ...newTransitions])
+    }
+
+    setIsAutoConnecting(false)
+  }
+
   const visibleComments = useMemo(() => {
     if (!selectedStepId) return []
     return comments.filter((comment) => comment.step_id === selectedStepId)
@@ -1937,15 +2007,15 @@ function App() {
         y: (step.order_index || 0) * yGap,
       }
 
-      const roleColors = getRoleColors(step.role)
+      const roleColors = getRoleColors(step.role, isWhiteMode)
 
       const baseStyle: CSSProperties = {
         borderRadius: 16,
         paddingInline: 18,
         paddingBlock: 10,
-        border: `1px solid ${roleColors.border}`,
+        border: `2px solid ${roleColors.border}`,
         background: roleColors.background,
-        color: '#f9fafb',
+        color: roleColors.text,
         fontSize: 12,
       }
 
@@ -2594,9 +2664,10 @@ function App() {
               </span>
               <span className="text-slate-500">
                 {isLoadingFlow ? 'Loading workflow...' : 'Workflow'}
-                {steps.length > 0 &&
+                {selectedProcessId && steps.length > 0 &&
                   (() => {
-                    const totalDays = steps.reduce((sum, step) => {
+                    const processSteps = steps.filter((s) => s.process_id === selectedProcessId)
+                    const totalDays = processSteps.reduce((sum, step) => {
                       const value = step.duration_days ?? 0
                       return sum + (Number.isFinite(value) ? value : 0)
                     }, 0)
@@ -2607,9 +2678,18 @@ function App() {
                     if (days > 0) parts.push(`${days}d`)
                     if (hours > 0) parts.push(`${hours}h`)
                     const durationLabel = parts.length > 0 ? parts.join(' ') : '0d'
+                    // Find most recent edit time from steps
+                    const lastEditTime = processSteps.reduce((latest, step) => {
+                      const stepTime = new Date(step.created_at).getTime()
+                      return stepTime > latest ? stepTime : latest
+                    }, 0)
+                    const lastEditLabel = lastEditTime > 0
+                      ? new Date(lastEditTime).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                      : null
                     return (
                       <span className="ml-2 text-[10px] text-slate-500">
-                        · {steps.length} points · {durationLabel}
+                        · {processSteps.length} steps · {durationLabel}
+                        {lastEditLabel && ` · Last: ${lastEditLabel}`}
                       </span>
                     )
                   })()}
@@ -2715,6 +2795,8 @@ function App() {
                       key={`${selectedProcessId ?? 'none'}:${flowVersion}`}
                       nodes={nodes}
                       edges={edges}
+                      nodeTypes={nodeTypes}
+                      edgeTypes={edgeTypes}
                       fitView
                       style={{ width: '100%', height: '100%' }}
                       proOptions={{ hideAttribution: true }}
@@ -2831,23 +2913,134 @@ function App() {
               }`}
             >
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <p
-                  className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${
-                    isWhiteMode ? 'text-slate-700' : 'text-slate-400'
-                  }`}
-                >
-                  Admin · Edit Flow
-                </p>
-                <p
-                  className={`text-[10px] ${
-                    isWhiteMode ? 'text-slate-600' : 'text-slate-500'
-                  }`}
-                >
-                  Process:{' '}
-                  {processes.find((p) => p.id === selectedProcessId)?.slug ?? 'none selected'}
-                </p>
+                <div className="flex items-center gap-2">
+                  <p
+                    className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                      isWhiteMode ? 'text-slate-700' : 'text-slate-400'
+                    }`}
+                  >
+                    Admin · Edit Flow
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIsAdminPanelMinimized(!isAdminPanelMinimized)}
+                    className={`rounded px-2 py-0.5 text-[9px] uppercase tracking-wide transition-colors ${
+                      isWhiteMode
+                        ? 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        : 'bg-white/5 text-slate-400 hover:bg-white/10'
+                    }`}
+                  >
+                    {isAdminPanelMinimized ? '▼ Expand' : '▲ Minimize'}
+                  </button>
+                  {!isAdminPanelMinimized && (
+                    <div className="flex items-center gap-1">
+                      {(['sm', 'md', 'lg', 'full'] as const).map((size) => (
+                        <button
+                          key={size}
+                          type="button"
+                          onClick={() => setAdminPanelHeight(size)}
+                          className={`rounded px-1.5 py-0.5 text-[8px] uppercase tracking-wide transition-colors ${
+                            adminPanelHeight === size
+                              ? isWhiteMode
+                                ? 'bg-nest-gold text-black'
+                                : 'bg-nest-gold text-black'
+                              : isWhiteMode
+                                ? 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                                : 'bg-white/5 text-slate-500 hover:bg-white/10'
+                          }`}
+                        >
+                          {size === 'sm' ? 'S' : size === 'md' ? 'M' : size === 'lg' ? 'L' : 'Full'}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={!selectedProcessId}
+                    onClick={() => {
+                      const process = processes.find((p) => p.id === selectedProcessId)
+                      if (!process) return
+                      const processSteps = steps
+                        .filter((s) => s.process_id === selectedProcessId)
+                        .sort((a, b) => (a.order_index || 0) - (b.order_index || 0))
+                      const processTransitions = transitions.filter((t) => t.process_id === selectedProcessId)
+                      
+                      // Create Odoo-friendly XML format for workflow
+                      const odooXml = `<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <data>
+    <!-- Process: ${process.name} -->
+    <!-- Category: ${process.category || 'Uncategorized'} -->
+    <!-- Description: ${process.description || 'No description'} -->
+    
+    <!-- Activity Types for each step -->
+${processSteps.map((step, idx) => `    <record id="activity_${process.slug}_step_${idx + 1}" model="mail.activity.type">
+      <field name="name">${step.title}</field>
+      <field name="summary">${step.description || ''}</field>
+      <field name="delay_count">${Math.ceil(step.duration_days || 1)}</field>
+      <field name="delay_unit">days</field>
+      <field name="res_model">project.task</field>
+      <field name="sequence">${step.order_index}</field>
+      <!-- Role: ${step.role || 'Unassigned'} -->
+    </record>`).join('\n\n')}
+
+    <!-- Workflow Stages -->
+${processSteps.map((step, idx) => `    <record id="stage_${process.slug}_${idx + 1}" model="project.task.type">
+      <field name="name">${step.title}</field>
+      <field name="sequence">${step.order_index}</field>
+      <field name="description">${step.description || ''}</field>
+    </record>`).join('\n\n')}
+  </data>
+</odoo>
+
+<!--
+TRANSITIONS (for automation rules):
+${processTransitions.map((t) => {
+  const fromStep = processSteps.find((s) => s.id === t.from_step_id)
+  const toStep = processSteps.find((s) => s.id === t.to_step_id)
+  return `From: "${fromStep?.title}" → To: "${toStep?.title}"`
+}).join('\n')}
+-->
+
+<!--
+STEPS SUMMARY (CSV format for easy import):
+order_index,title,role,duration_days,description
+${processSteps.map((s) => `${s.order_index},"${s.title}","${s.role || ''}",${s.duration_days || ''},"${(s.description || '').replace(/"/g, '""')}"`).join('\n')}
+-->
+`
+                      const blob = new Blob([odooXml], { type: 'application/xml' })
+                      const url = URL.createObjectURL(blob)
+                      const a = document.createElement('a')
+                      a.href = url
+                      a.download = `${process.name}-odoo.xml`
+                      a.click()
+                      URL.revokeObjectURL(url)
+                    }}
+                    className={`rounded px-2 py-0.5 text-[9px] uppercase tracking-wide transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                      isWhiteMode
+                        ? 'bg-purple-100 text-purple-700 hover:bg-purple-200'
+                        : 'bg-purple-900/30 text-purple-300 hover:bg-purple-900/50'
+                    }`}
+                  >
+                    Export Odoo
+                  </button>
+                  <p
+                    className={`text-[10px] ${
+                      isWhiteMode ? 'text-slate-600' : 'text-slate-500'
+                    }`}
+                  >
+                    {processes.find((p) => p.id === selectedProcessId)?.slug ?? 'none'}
+                  </p>
+                </div>
               </div>
-              <div className="space-y-3">
+              {!isAdminPanelMinimized && <div className={`space-y-3 overflow-y-auto ${
+                adminPanelHeight === 'sm' ? 'max-h-40' :
+                adminPanelHeight === 'md' ? 'max-h-72' :
+                adminPanelHeight === 'lg' ? 'max-h-[28rem]' :
+                'max-h-none'
+              }`}>
                 <form className="space-y-2" onSubmit={handleCreateStep}>
                   <p
                     className={`text-[10px] font-semibold ${
@@ -3009,6 +3202,23 @@ function App() {
                           Clear selection
                         </button>
                       </div>
+                      <div className="mt-2 space-y-1 border-t border-white/10 pt-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className={`text-[10px] font-semibold ${isWhiteMode ? 'text-slate-600' : 'text-slate-400'}`}>Connections</p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={!selectedProcessId || isAutoConnecting || steps.filter((s) => s.process_id === selectedProcessId).length < 2}
+                          onClick={handleAutoConnectSteps}
+                          className={`w-full rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:cursor-not-allowed disabled:opacity-60 ${
+                            isWhiteMode
+                              ? 'border-emerald-500 bg-emerald-100 text-emerald-900 hover:bg-emerald-200'
+                              : 'border-emerald-500/40 bg-emerald-900/20 text-emerald-400 hover:bg-emerald-900/40'
+                          }`}
+                        >
+                          {isAutoConnecting ? 'Connecting...' : 'Auto-Connect All Steps'}
+                        </button>
+                      </div>
                       <div className="mt-2 space-y-1 border-t border-red-500/25 pt-2">
                         <div className="flex items-center justify-between gap-2">
                           <p className="text-[10px] font-semibold text-red-300">Danger zone</p>
@@ -3111,7 +3321,7 @@ function App() {
                     </div>
                   </div>
                 </form>
-              </div>
+              </div>}
             </div>
           )}
         </section>

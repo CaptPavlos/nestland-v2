@@ -1,19 +1,5 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+// Re-export the Neon database client with Supabase-compatible API
+// This allows minimal changes to App.tsx while using Neon as the backend
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
-
-let client: SupabaseClient | null = null
-
-if (supabaseUrl && supabaseAnonKey) {
-  client = createClient(supabaseUrl, supabaseAnonKey)
-} else {
-  if (import.meta.env.DEV) {
-     
-    console.warn(
-      '[Nestland v2] Supabase env vars are not set. Anonymous comments are disabled until VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are configured.',
-    )
-  }
-}
-
-export const supabase = client
+export { supabase, auth, storage, getCurrentUser } from './database'
+export type { User } from './database'
