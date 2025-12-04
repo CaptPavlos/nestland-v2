@@ -6,7 +6,7 @@ const PUSHOVER_API_URL = 'https://api.pushover.net/1/messages.json'
 
 // Pushover credentials
 const PUSHOVER_USER_KEY = 'uwkw4brd7s13oaigns171fa7gj18s8'
-const PUSHOVER_APP_TOKEN = 'h9foydp5fx' // Note: This appears to be an email, you may need to replace with actual app token
+const PUSHOVER_APP_TOKEN = 'a8wsoxh47do8wot8vwbra76xzsj1j8'
 
 interface PushoverMessage {
   title: string
