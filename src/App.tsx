@@ -11,6 +11,7 @@ import {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { supabase, auth, getCurrentUser, type User } from './lib/supabaseClient'
+import { notifyNewComment } from './lib/pushover'
 
 type Comment = {
   id: string
@@ -863,6 +864,24 @@ function App() {
       setComments((prev) => [data, ...prev])
       setNewComment('')
       setCommentError(null)
+      
+      // Send push notification for new comment
+      const authorName = (() => {
+        const preferred = profileFirstName.trim()
+        if (preferred) return preferred
+        if (!user?.email) return null
+        const localPart = user.email.split('@')[0] ?? ''
+        const token = localPart.split(/[._\s-]+/)[0] || localPart
+        if (!token) return null
+        return token.charAt(0).toUpperCase() + token.slice(1)
+      })()
+      
+      const currentProcess = processes.find(p => p.slug === (selectedProcessSlug ?? DEFAULT_PROCESS_SLUG))
+      void notifyNewComment({
+        authorName,
+        commentBody: body,
+        processName: currentProcess?.name,
+      })
     }
 
     setIsSubmittingComment(false)
@@ -1082,6 +1101,16 @@ function App() {
         const next = { ...prev }
         delete next[key]
         return next
+      })
+      
+      // Send push notification for new project step comment
+      const project = projects.find(p => p.id === projectId)
+      const step = projectSteps.find(s => s.id === stepId)
+      void notifyNewComment({
+        authorName: profileFirstName.trim() || null,
+        commentBody: body,
+        projectName: project?.name,
+        stepTitle: step?.title,
       })
     }
 
