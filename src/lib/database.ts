@@ -406,19 +406,23 @@ type StorageFile = {
 
 export const storage = {
   from: (bucket: string) => ({
-    list: async (_prefix: string, _options?: unknown): Promise<{ data: StorageFile[] | null; error: Error | null }> => {
+    list: async (_prefix?: string, _options?: unknown): Promise<{ data: StorageFile[] | null; error: Error | null }> => {
+      void _prefix; void _options;
       console.warn(`Storage not available in Neon. Bucket: ${bucket}. Consider using Cloudflare R2 or AWS S3.`)
       return { data: [], error: null }
     },
-    upload: async (_path: string, _file: File, _options?: unknown): Promise<{ data: null; error: Error | null }> => {
+    upload: async (_path?: string, _file?: File, _options?: unknown): Promise<{ data: null; error: Error | null }> => {
+      void _path; void _file; void _options;
       console.warn(`Storage not available in Neon. Bucket: ${bucket}`)
       return { data: null, error: new Error('File storage not available. Consider using Cloudflare R2 or AWS S3.') }
     },
-    remove: async (_paths: string[]): Promise<{ data: null; error: Error | null }> => {
+    remove: async (_paths?: string[]): Promise<{ data: null; error: Error | null }> => {
+      void _paths;
       console.warn(`Storage not available in Neon. Bucket: ${bucket}`)
       return { data: null, error: new Error('File storage not available.') }
     },
-    createSignedUrl: async (_path: string, _expiresIn: number): Promise<{ data: { signedUrl: string } | null; error: Error | null }> => {
+    createSignedUrl: async (_path?: string, _expiresIn?: number): Promise<{ data: { signedUrl: string } | null; error: Error | null }> => {
+      void _path; void _expiresIn;
       return { data: null, error: new Error('File storage not available.') }
     },
   }),
@@ -428,8 +432,8 @@ export const storage = {
 // Main Database Client (Supabase-compatible API)
 // ============================================
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const database = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   from: <T = any>(table: string) => createQueryBuilder<T>(table),
   rpc,
   auth,

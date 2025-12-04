@@ -32,7 +32,7 @@ async function fetchFromSupabase(table: string) {
   return response.json()
 }
 
-async function upsertProcesses(processes: any[]) {
+async function upsertProcesses(processes: Record<string, unknown>[]) {
   console.log(`Syncing ${processes.length} processes...`)
   for (const p of processes) {
     await sql`
@@ -49,7 +49,7 @@ async function upsertProcesses(processes: any[]) {
   console.log('✓ Processes synced')
 }
 
-async function upsertProcessSteps(steps: any[]) {
+async function upsertProcessSteps(steps: Record<string, unknown>[]) {
   console.log(`Syncing ${steps.length} process steps...`)
   for (const s of steps) {
     await sql`
@@ -67,7 +67,7 @@ async function upsertProcessSteps(steps: any[]) {
   console.log('✓ Process steps synced')
 }
 
-async function upsertProcessTransitions(transitions: any[]) {
+async function upsertProcessTransitions(transitions: Record<string, unknown>[]) {
   console.log(`Syncing ${transitions.length} process transitions...`)
   for (const t of transitions) {
     await sql`
