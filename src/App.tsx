@@ -3111,38 +3111,53 @@ ${processSteps.map((s) => `${s.order_index},"${s.title}","${s.role || ''}",${s.d
                           Roles (multi-select)
                         </p>
                         <div className="flex flex-wrap gap-1">
-                          {dynamicRoleOptions.map((role) => {
-                            const selectedRoles = newStepRole
-                              .split(',')
-                              .map((value) => value.trim())
-                              .filter((value) => value.length > 0)
-                            const isSelected = selectedRoles.includes(role)
-                            return (
-                              <button
-                                key={role}
-                                type="button"
-                                onClick={() => {
-                                  const current = newStepRole
-                                    .split(',')
-                                    .map((value) => value.trim())
-                                    .filter((value) => value.length > 0)
-                                  const next = isSelected
-                                    ? current.filter((value) => value !== role)
-                                    : [...current, role]
-                                  setNewStepRole(next.join(', '))
-                                }}
-                                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${
-                                  isSelected
-                                    ? 'border-nest-gold/60 bg-nest-gold/20 text-nest-gold'
-                                    : isWhiteMode
-                                      ? 'border-slate-300 bg-white text-slate-700 shadow-sm hover:border-nest-gold/40 hover:text-nest-gold'
-                                      : 'border-white/10 bg-black/40 text-slate-200 hover:border-nest-gold/40 hover:text-nest-gold'
-                                }`}
-                              >
-                                {role}
-                              </button>
-                            )
-                          })}
+                          {dynamicRoleOptions.length === 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => setIsSettingsOpen(true)}
+                              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] ${
+                                isWhiteMode
+                                  ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                                  : 'border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'
+                              }`}
+                            >
+                              <span>⚙️</span>
+                              <span>No roles defined — click to add in Settings</span>
+                            </button>
+                          ) : (
+                            dynamicRoleOptions.map((role) => {
+                              const selectedRoles = newStepRole
+                                .split(',')
+                                .map((value) => value.trim())
+                                .filter((value) => value.length > 0)
+                              const isSelected = selectedRoles.includes(role)
+                              return (
+                                <button
+                                  key={role}
+                                  type="button"
+                                  onClick={() => {
+                                    const current = newStepRole
+                                      .split(',')
+                                      .map((value) => value.trim())
+                                      .filter((value) => value.length > 0)
+                                    const next = isSelected
+                                      ? current.filter((value) => value !== role)
+                                      : [...current, role]
+                                    setNewStepRole(next.join(', '))
+                                  }}
+                                  className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${
+                                    isSelected
+                                      ? 'border-nest-gold/60 bg-nest-gold/20 text-nest-gold'
+                                      : isWhiteMode
+                                        ? 'border-slate-300 bg-white text-slate-700 shadow-sm hover:border-nest-gold/40 hover:text-nest-gold'
+                                        : 'border-white/10 bg-black/40 text-slate-200 hover:border-nest-gold/40 hover:text-nest-gold'
+                                  }`}
+                                >
+                                  {role}
+                                </button>
+                              )
+                            })
+                          )}
                         </div>
                       </div>
                       <div className="flex flex-col gap-1">
