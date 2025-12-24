@@ -1555,9 +1555,12 @@ function App() {
       .single()
 
     if (error) {
-       
       console.error('Failed to create process', error)
-      setProcessFormError('Failed to create process')
+      if ((error as any).code === '23505' || error.message?.includes('duplicate key')) {
+        setProcessFormError(`A process with category "${slug}" already exists. Please use a different category.`)
+      } else {
+        setProcessFormError('Failed to create process')
+      }
     } else if (data) {
       setProcesses((prev) => [...prev, data].sort((a, b) => a.name.localeCompare(b.name)))
       setNewProcessSlug('')
